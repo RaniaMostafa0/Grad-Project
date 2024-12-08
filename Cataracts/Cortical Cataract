@@ -1,0 +1,141 @@
+import cv2
+import numpy as np
+import time  # To measure time
+import matplotlib.pyplot as plt
+
+# Path to the video
+video_path = r"C:\Users\pc\Downloads\WhatsApp Video 2024-11-30 at 23.04.32_ebe3b33d.mp4"
+output_video_path = r"C:\Users\pc\Downloads\cortical.mp4"
+
+# Open the video file
+cap = cv2.VideoCapture(video_path)
+
+# Check if the video opened successfully
+if not cap.isOpened():
+    raise FileNotFoundError(f"Unable to open video at {video_path}. Please check the file path.")
+
+# Get video properties (frame width, height, FPS)
+frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+original_fps = cap.get(cv2.CAP_PROP_FPS)
+
+# Define the codec and create a VideoWriter object to save the processed video
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 'mp4v' codec for .mp4 format
+out = cv2.VideoWriter(output_video_path, fourcc, original_fps, (frame_width, frame_height))
+
+# Create a glare and halo effect for the bright areas
+def apply_glare_and_halo(image, mask, halo_intensity=300.0, glare_blur=91):
+    # Brighten only the bright areas massively
+    brightened = cv2.addWeighted(image, 1, np.ones_like(image) * 255, halo_intensity / 255.0, 0)
+    
+    # Apply Gaussian blur to create a wide halo effect
+    halo_effect = cv2.GaussianBlur(brightened, (glare_blur, glare_blur), 0)
+    
+    # Mask the glare and halo effect to only affect the bright areas
+    glare_halo = cv2.bitwise_and(halo_effect, mask)
+    
+    # Scale up the effect to make it more noticeable
+    glare_halo = cv2.addWeighted(image, 1, glare_halo, 1.5, 0)  # Increase the scaling factor for stronger effect
+    
+    return glare_halo
+
+# Function to decrease contrast sensitivity (reduce contrast in the image)
+def decrease_contrast(image, factor=0.5):
+    """
+    Reduces the contrast by blending the image with a gray image.
+    factor < 1 reduces contrast, while factor > 1 increases it.
+    """
+    # Convert to float to avoid overflow during the operation
+    image_float = np.float32(image)
+    
+    # Create a gray image (average color)
+    gray_image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    mean_color = np.mean(gray_image)
+    
+    # Create a mask to blend the original image with the gray image
+    contrast_reduced = cv2.addWeighted(image_float, factor, np.ones_like(image_float) * mean_color, 1 - factor, 0)
+    
+    # Convert back to uint8
+    contrast_reduced = np.uint8(np.clip(contrast_reduced, 0, 255))
+    
+    return contrast_reduced
+
+# Initialize a variable to calculate total time and frame count
+total_processing_time = 0
+frame_count = 0
+
+# Record the start time of video processing
+start_time_video = time.time()
+
+while True:
+    # Read a frame from the video
+    ret, frame = cap.read()
+    
+    if not ret:
+        break  # Break the loop if there are no more frames
+    
+    # Start timer for processing time for the current frame
+    start_time_frame = time.time()
+
+    # Convert to RGB for processing
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Convert the image to grayscale to detect bright areas
+    gray_image = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+
+    # Threshold to detect bright areas
+    _, bright_areas = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY)
+
+    # Create a mask for bright areas
+    bright_mask = cv2.merge([bright_areas, bright_areas, bright_areas])
+
+    # Apply Gaussian blur to the frame for a smoother base
+    blurred_frame = cv2.GaussianBlur(frame_rgb, (15, 15), 0)
+
+    # Apply the glare effect to the bright areas
+    glare_halo = apply_glare_and_halo(blurred_frame, bright_mask)
+
+    # Combine the glare effect with the original image (only affecting detected regions)
+    final_frame = cv2.addWeighted(blurred_frame, 1, glare_halo, 0.7, 0)  # Adjust blend strength
+
+    # Apply Gaussian blur to the final frame (if needed for a softer overall effect)
+    final_frame = cv2.GaussianBlur(final_frame, (15, 15), 0)
+
+    # Decrease the contrast sensitivity by reducing the contrast
+    final_frame = decrease_contrast(final_frame, factor=0.5)
+
+    # Convert the final frame back to BGR for saving
+    final_frame_bgr = cv2.cvtColor(final_frame, cv2.COLOR_RGB2BGR)
+
+    # Write the processed frame to the output video
+    out.write(final_frame_bgr)
+
+    # End timer for processing time for the current frame
+    end_time_frame = time.time()
+    
+    # Calculate and accumulate the processing time for each frame
+    processing_time_frame = end_time_frame - start_time_frame
+    total_processing_time += processing_time_frame
+    frame_count += 1
+
+# Release the video capture and writer objects
+cap.release()
+out.release()
+
+# Record the end time of the entire video processing
+end_time_video = time.time()
+
+# Calculate overall processing FPS (frames per second) for the entire video
+overall_processing_time = end_time_video - start_time_video
+overall_processing_fps = frame_count / overall_processing_time
+
+# Calculate average processing time per frame
+average_processing_time = total_processing_time / frame_count
+
+# Print the results
+print(f"Processed video saved to {output_video_path}")
+print(f"Average processing time per frame: {average_processing_time:.4f} seconds")
+print(f"Overall processing FPS: {overall_processing_fps:.2f}")
+
+# Print the original FPS of the video
+print(f"Original video FPS: {original_fps}")
