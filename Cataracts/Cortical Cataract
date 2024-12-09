@@ -20,8 +20,8 @@ original_fps = cap.get(cv2.CAP_PROP_FPS)
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 'mp4v' codec for .mp4 format
 out = cv2.VideoWriter(output_video_path, fourcc, original_fps, (frame_width, frame_height))
 
-# Optimized glare and halo effect using vectorized operations
-def apply_glare_and_halo(image, mask, halo_intensity=0.7, glare_blur=15):
+# Optimized glare, halo, and glare effect using vectorized operations
+def apply_glare_and_halo(image, mask, halo_intensity=0.7, glare_intensity=0.5, glare_blur=15):
     """
     Applies glare and halo effect to the bright areas of the image.
     Uses optimized vectorized operations for speed.
@@ -35,7 +35,14 @@ def apply_glare_and_halo(image, mask, halo_intensity=0.7, glare_blur=15):
     # Apply the halo effect with blending
     glare_halo = cv2.addWeighted(image, 1, halo_effect, halo_intensity, 0)
 
-    return glare_halo
+    # Add glare by blending the bright mask with an intense light overlay
+    glare_overlay = np.full_like(image, (255, 255, 255), dtype=np.uint8)  # White overlay
+    glare_effect = cv2.addWeighted(image, 1 - glare_intensity, glare_overlay, glare_intensity, 0)
+
+    # Combine glare effect and halo effect
+    final_image = cv2.addWeighted(glare_halo, 1, glare_effect, 0.5, 0)
+
+    return final_image
 
 # Reduce contrast using vectorized operations
 def decrease_contrast(image, factor=0.5):
