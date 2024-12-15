@@ -1,0 +1,112 @@
+import cv2
+import numpy as np
+from IPython.display import display, clear_output
+from PIL import Image
+import time
+
+def separable_gaussian_blur(image, kernel_size, sigma):
+    """Apply separable Gaussian blur to simulate blurriness."""
+    k = cv2.getGaussianKernel(kernel_size, sigma)
+    blurred = cv2.filter2D(image, -1, k)  # Blur in X direction
+    blurred = cv2.filter2D(blurred, -1, k.T)  # Blur in Y direction
+    return blurred
+
+def simulate_night_blindness(image, adjustment_level):
+    """Simulate moderate night blindness for the middle stage."""
+    # Darken the image moderately (middle stage adjustment level)
+    darkened_image = image * 0.4  # Stronger darkening
+    darkened_image = np.clip(darkened_image, 0, 255)
+    
+    # Apply a stronger blur to simulate middle stage vision difficulty
+    blurred_image = separable_gaussian_blur(darkened_image, 25, 8)  # Moderate blur effect
+    return blurred_image.astype(np.uint8)
+
+
+def detect_light_condition(frame):
+    """Detect the average brightness of the frame to simulate light condition (bright or dark)."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    avg_brightness = np.mean(gray)
+    return avg_brightness
+
+def apply_realistic_tunnel_vision(image_rgb, edge_fade_size=151, radius_scale=0.9):
+    """
+    Applies a realistic vignette (tunnel vision) effect with smooth fading at the edges.
+    """
+    rows, cols = image_rgb.shape[:2]
+    center_x, center_y = int(cols / 2), int(rows / 2)
+    radius = int(min(center_x, center_y) * radius_scale)  # Large radius for bigger visible area
+
+    # Create a circular mask with smooth Gaussian fading
+    mask = np.zeros((rows, cols), np.uint8)
+    cv2.circle(mask, (center_x, center_y), radius, (255), -1)  # Draw the visible area
+    mask = cv2.GaussianBlur(mask, (edge_fade_size, edge_fade_size), 0)  # Smooth edge fading
+    mask = mask / 255.0  # Normalize to range [0, 1]
+
+    # Apply the mask to the image
+    vision_image = np.copy(image_rgb)
+    for i in range(3):  # Apply mask to all 3 channels
+        vision_image[:, :, i] = vision_image[:, :, i] * mask
+
+    return vision_image
+
+def simulate_light_and_dark_conditions():
+    # Open the webcam
+    cap = cv2.VideoCapture(1)  # Use 0 for the default webcam
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+
+    adjustment_level = 0.2
+    print("Press 'Kernel Interrupt' to stop the display.")
+    prev_time = time.time()
+    try:
+        while True:
+            start_time = time.time() 
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to capture frame.")
+                break
+
+            # Resize frame proportionally for display
+            target_height = 720
+            target_width = int(frame.shape[1] * (target_height / frame.shape[0]))
+            frame_resized = cv2.resize(frame, (target_width, target_height))
+
+            # Detect light condition
+            avg_brightness = detect_light_condition(frame_resized)
+
+            if avg_brightness < 100:  # Dark condition
+                print("In darkness, simulating night blindness with realistic tunnel vision.")
+                # Apply night blindness first
+                darkened_blurred_frame = simulate_night_blindness(frame_resized, adjustment_level)
+                # Apply realistic tunnel vision
+                adjusted_frame = apply_realistic_tunnel_vision(darkened_blurred_frame, edge_fade_size=151, radius_scale=0.9)
+                adjustment_level = min(1.0, adjustment_level + 0.005)
+            else:  # Light condition, apply realistic tunnel vision only
+                print("In light, simulating realistic tunnel vision.")
+                adjusted_frame = apply_realistic_tunnel_vision(frame_resized, edge_fade_size=151, radius_scale=0.9)
+
+            # Convert to PIL Image for inline display
+            img = cv2.cvtColor(adjusted_frame.astype(np.uint8), cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(img)
+
+            # Display the image inline
+            clear_output(wait=True)
+            display(pil_img)
+            
+            # Calculate FPS
+            end_time = time.time()
+            frame_time = end_time - start_time
+            fps = 1 / frame_time
+
+            print(f"FPS: {fps:.2f}")  # Print the FPS value for smoothness
+            # Add delay for smooth real-time display
+            time.sleep(0.03)
+
+    except KeyboardInterrupt:
+        print("Exiting simulation.")
+
+    # Release resources
+    cap.release()
+
+simulate_light_and_dark_conditions()
