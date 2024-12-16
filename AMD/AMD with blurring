@@ -1,0 +1,104 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+from glob import glob
+import time
+
+def separable_gaussian_blur(image, kernel_size, sigma):
+    """
+    Applies separable Gaussian blur using two 1D convolutions.
+    """
+    # Generate 1D Gaussian kernel
+    k = cv2.getGaussianKernel(kernel_size, sigma)
+    
+    # Apply Gaussian blur separately in X and Y directions
+    blurred = cv2.filter2D(image, -1, k)  # Blur in X direction
+    blurred = cv2.filter2D(blurred, -1, k.T)  # Blur in Y direction
+    return blurred
+
+def simulate_amd_and_blur(image):
+    h, w = image.shape[:2]
+    center_x, center_y = w // 2, h // 2
+
+    # --- Step 1: Create Organic Black Spot ---
+    y, x = np.ogrid[:h, :w]
+    base_radius_x, base_radius_y = 80, 60
+    max_radius_x, max_radius_y = 130, 100
+
+    # Calculate elliptical distances
+    distance_x = ((x - center_x) / base_radius_x) ** 2
+    distance_y = ((y - center_y) / base_radius_y) ** 2
+    distance = np.sqrt(distance_x + distance_y)
+
+    # Create mask
+    mask = np.zeros((h, w), dtype=np.float32)
+    mask[distance < 1] = 1  # Fully black inside the inner oval
+    transition_region = (distance >= 1) & (distance < max_radius_x / base_radius_x)
+    mask[transition_region] = 1 - ((distance[transition_region] - 1) / ((max_radius_x / base_radius_x) - 1))
+
+    # Add random organic extensions
+    extension_probability = 0.005
+    random_mask = np.random.rand(h, w) < extension_probability
+    random_indices = np.where((mask > 0.5) & (mask < 1) & random_mask)
+    for y_ext, x_ext in zip(*random_indices):
+        blob_radius = np.random.randint(5, 15)
+        cv2.circle(mask, (x_ext, y_ext), blob_radius, 1, -1)
+
+    # Apply separable Gaussian blur to smooth the mask
+    kernel_size = 51
+    mask = separable_gaussian_blur(mask, kernel_size, 0)
+
+    # Apply mask to darken the center
+    faded_spot = image.astype(np.float32) * (1 - mask[..., None])
+
+    # --- Step 2: Gradual Blurring Mask Creation ---
+    mask_start = time.time()
+    distance_from_center = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+    blur_mask = np.exp(-(distance_from_center**2) / (2 * (w // 4)**2))
+    blur_mask = (blur_mask * 255).astype(np.uint8)
+    mask_end = time.time()
+
+    # Apply Heavy Blur
+    blur_start = time.time()
+    heavy_blur = cv2.GaussianBlur(faded_spot, (51, 51), 0)
+    blur_end = time.time()
+
+    # Blend with Gradual Mask
+    blend_start = time.time()
+    mask_3d = cv2.merge([blur_mask] * 3) / 255.0
+    final_img = cv2.convertScaleAbs(faded_spot * (1 - mask_3d) + heavy_blur * mask_3d)
+    blend_end = time.time()
+
+    # Print timing
+    print(f"Mask creation time: {mask_end - mask_start:.4f} seconds")
+    print(f"Heavy blur application time: {blur_end - blur_start:.4f} seconds")
+    print(f"Blending time: {blend_end - blend_start:.4f} seconds")
+
+    return final_img
+
+# Test the effect on a single image
+image_path = r"D:\grad images dataset\unsplash-images-collection\photo-1459255418679-d6424da9ee33.jpg"
+image = cv2.imread(image_path)
+if image is None:
+    print(f"Failed to load image: {image_path}")
+else:
+    # Resize for consistent display
+    image = cv2.resize(image, (600, 400))
+
+    # Apply the combined AMD and blurring effect
+    final_result = simulate_amd_and_blur(image)
+
+    # Display the original and final images side by side
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    plt.title("Original Image")
+    plt.axis('off')
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(cv2.cvtColor(final_result, cv2.COLOR_BGR2RGB))
+    plt.title("AMD with Surrounding Blurring")
+    plt.axis('off')
+
+    plt.show()
