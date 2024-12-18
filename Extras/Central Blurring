@@ -1,0 +1,88 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import time
+
+# Path to your image
+image_path = r"D:\grad images dataset\unsplash-images-collection\photo-1458571037713-913d8b481dc6.jpg"
+
+def apply_realistic_macular_pucker_effect(image):
+    h, w = image.shape[:2]
+
+    # Step 1: Gradual Blurring Mask Creation
+    mask_start = time.time()
+    center_x, center_y = w // 2, h // 2
+    y, x = np.ogrid[:h, :w]
+    distance_from_center = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+    blur_mask = np.exp(-(distance_from_center**2) / (2 * (w // 4)**2))
+    blur_mask = (blur_mask * 255).astype(np.uint8)
+    mask_end = time.time()
+    
+    # Step 2: Apply Heavy Blur
+    blur_start = time.time()
+    heavy_blur = cv2.GaussianBlur(image, (51, 51), 0)
+    blur_end = time.time()
+    
+    # Step 3: Blend with Gradual Mask
+    blend_start = time.time()
+    mask_3d = cv2.merge([blur_mask] * 3) / 255.0
+    final_img = cv2.convertScaleAbs(image * (1 - mask_3d) + heavy_blur * mask_3d)
+    blend_end = time.time()
+
+    # Print timing for each part of the function
+    print(f"  Mask creation time: {mask_end - mask_start:.4f} seconds")
+    print(f"  Heavy blur application time: {blur_end - blur_start:.4f} seconds")
+    print(f"  Blending time: {blend_end - blend_start:.4f} seconds")
+
+    return final_img
+
+# Process the specified image
+processing_times = []  # List to store processing times for the image
+
+# Start total timing
+total_start = time.time()
+
+# Read image
+read_start = time.time()
+image = cv2.imread(image_path)
+read_end = time.time()
+if image is not None:
+    # Resize for consistent display
+    resize_start = time.time()
+    image = cv2.resize(image, (600, 400))
+    resize_end = time.time()
+
+    # Apply the realistic macular pucker effect
+    pucker_image = apply_realistic_macular_pucker_effect(image)
+
+    # End total timing
+    total_end = time.time()
+    total_time = total_end - total_start
+    processing_times.append(total_time)  # Append total time for this image
+
+    # Display the original and the distorted image side by side
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    plt.title("Original Image")
+    plt.axis('off')
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(cv2.cvtColor(pucker_image, cv2.COLOR_BGR2RGB))
+    plt.title("Central Blurring Effect")
+    plt.axis('off')
+
+    # Show the images
+    plt.show()
+
+    # Print timing for each step
+    print(f"\nImage: {os.path.basename(image_path)}")
+    print(f"  Image read time: {read_end - read_start:.4f} seconds")
+    print(f"  Image resize time: {resize_end - resize_start:.4f} seconds")
+    print(f"  Total effect processing time: {total_time:.4f} seconds\n")
+
+# Calculate the average processing time
+if processing_times:
+    average_processing_time = sum(processing_times) / len(processing_times)
+    print(f"\nAverage processing time for the image: {average_processing_time:.4f} seconds")
