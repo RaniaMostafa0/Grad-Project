@@ -1,0 +1,95 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+from glob import glob
+import time
+
+# Path to your dataset
+dataset_path = r"D:\grad images dataset\unsplash-images-collection"
+
+def apply_stargardt_distortion(image):
+    h, w = image.shape[:2]
+    
+    # Define central region parameters for Stargardt effect
+    center_x, center_y = w // 2, h // 2
+    radius = min(h, w) // 3  # Larger radius for wider central distortion
+
+    # Create remapping grids
+    map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
+    map_x, map_y = map_x.astype(np.float32), map_y.astype(np.float32)
+
+    # Apply wave distortion with a gradual intensity decrease toward the edge
+    for y in range(h):
+        for x in range(w):
+            # Calculate distance from the center
+            distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+            if distance < radius:
+                # Calculate wave intensity based on distance (stronger at center, fades outward)
+                fade_factor = (radius - distance) / radius  # Value between 0 and 1
+                distortion = np.sin(2 * np.pi * (x - center_x) / w * 4) * 20 * fade_factor
+                map_y[y, x] += distortion
+
+    # Distort the image using remapping
+    distorted_img = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    
+    return distorted_img
+
+def process_image(img_path):
+    # Start timing for total processing
+    total_start = time.time()
+
+    # Read image
+    image = cv2.imread(img_path)
+    if image is None:
+        return None, os.path.basename(img_path), 0.0
+
+    # Resize for consistent display
+    image = cv2.resize(image, (600, 400))
+
+    # Apply the Stargardt distortion effect
+    distorted_image = apply_stargardt_distortion(image)
+    
+    # Calculate total processing time
+    total_time = time.time() - total_start
+    
+    # Return the processed image, filename, and time taken
+    return distorted_image, os.path.basename(img_path), total_time
+
+# Process images sequentially
+image_paths = glob(os.path.join(dataset_path, '*.jpg'))[:50]
+processing_times = []
+
+for img_path in image_paths:
+    # Process each image
+    distorted_image, img_name, processing_time = process_image(img_path)
+    if distorted_image is None:
+        continue  # Skip images that couldn't be processed
+
+    # Append processing time for calculating average
+    processing_times.append(processing_time)
+
+    # Display the original and the distorted image side by side
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    image = cv2.imread(img_path)
+    image = cv2.resize(image, (600, 400))
+    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    plt.title("Original Image")
+    plt.axis('off')
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(cv2.cvtColor(distorted_image, cv2.COLOR_BGR2RGB))
+    plt.title("Stargardt Distortion Effect")
+    plt.axis('off')
+
+    # Show the images
+    plt.show()
+
+    # Print timing for each image
+    print(f"\nImage: {img_name}")
+    print(f"  Total effect processing time: {processing_time:.4f} seconds\n")
+
+# Calculate and print the average processing time
+average_processing_time = sum(processing_times) / len(processing_times)
+print(f"\nAverage processing time for {len(processing_times)} images: {average_processing_time:.4f} seconds")
