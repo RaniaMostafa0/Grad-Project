@@ -1,16 +1,13 @@
 import cv2
 import numpy as np
+import time
 from IPython.display import display, clear_output
 from PIL import Image
-import time
 
 
 def separable_gaussian_blur(image, kernel_size, sigma):
-    """Apply separable Gaussian blur to simulate blurriness."""
-    k = cv2.getGaussianKernel(kernel_size, sigma)
-    blurred = cv2.filter2D(image, -1, k)  # Blur in X direction
-    blurred = cv2.filter2D(blurred, -1, k.T)  # Blur in Y direction
-    return blurred
+    """Apply Gaussian blur more efficiently."""
+    return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
 
 
 def simulate_night_blindness(image):
@@ -26,8 +23,7 @@ def simulate_night_blindness(image):
 
 def detect_light_condition(frame):
     """Detect the average brightness of the frame to simulate light condition (bright or dark)."""
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    avg_brightness = np.mean(gray)
+    avg_brightness = np.mean(frame[:, :, 1])  # Use the green channel for brightness approximation
     return avg_brightness
 
 
@@ -72,6 +68,14 @@ def apply_static_tunnel_vision(image_rgb, static_mask):
     return vision_image.astype(np.uint8)
 
 
+def display_frame_in_notebook(frame):
+    """Display a frame inline in Jupyter Notebook."""
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB for PIL
+    pil_image = Image.fromarray(frame_rgb)
+    clear_output(wait=True)  # Clear the previous output
+    display(pil_image)
+
+
 def simulate_light_and_dark_conditions():
     # Open the webcam
     cap = cv2.VideoCapture(1)  # Use 0 for the default webcam
@@ -81,13 +85,15 @@ def simulate_light_and_dark_conditions():
 
     print("Press 'Kernel Interrupt' to stop the display.")
 
-    # Generate the static mask once based on the first frame's dimensions
+    # Generate the static mask once and resize it to the frame dimensions
     ret, sample_frame = cap.read()
     if not ret:
         print("Failed to capture frame for mask creation.")
         cap.release()
         return
-    static_mask = create_static_irregular_mask(sample_frame.shape[:2], radius_scale=1.2, noise_strength=0.3)
+
+    static_mask = create_static_irregular_mask(sample_frame.shape[:2], radius_scale=1.2, noise_strength=0.4)
+    static_mask_resized = cv2.resize(static_mask, (sample_frame.shape[1], sample_frame.shape[0]))
 
     try:
         while True:
@@ -98,44 +104,33 @@ def simulate_light_and_dark_conditions():
                 print("Failed to capture frame.")
                 break
 
-            # Resize frame proportionally for display
+            # Resize frame for faster processing
             target_height = 720
             target_width = int(frame.shape[1] * (target_height / frame.shape[0]))
             frame_resized = cv2.resize(frame, (target_width, target_height))
 
-            # Detect light condition
+            # Detect brightness (use a single channel)
             avg_brightness = detect_light_condition(frame_resized)
 
-            if avg_brightness < 100:  # Dark condition
-                print("In darkness, simulating night blindness with static irregular tunnel vision.")
-                # Apply enhanced night blindness
+            # Simulate based on brightness
+            if avg_brightness < 100:
                 darkened_frame = simulate_night_blindness(frame_resized)
-                # Apply the static irregular tunnel vision
-                adjusted_frame = apply_static_tunnel_vision(darkened_frame, static_mask)
-            else:  # Light condition, apply only tunnel vision
-                print("In light, simulating static irregular tunnel vision.")
-                adjusted_frame = apply_static_tunnel_vision(frame_resized, static_mask)
+                adjusted_frame = apply_static_tunnel_vision(darkened_frame, static_mask_resized)
+            else:
+                adjusted_frame = apply_static_tunnel_vision(frame_resized, static_mask_resized)
 
-            # Convert to PIL Image for inline display
-            img = cv2.cvtColor(adjusted_frame.astype(np.uint8), cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(img)
-
-            # Display the image inline
-            clear_output(wait=True)
-            display(pil_img)
+            # Display frame inline in Jupyter Notebook
+            display_frame_in_notebook(adjusted_frame)
 
             # Calculate FPS
             end_time = time.time()
             frame_time = end_time - start_time
             fps = 1 / frame_time
-            print(f"FPS: {fps:.2f}")  # Print the FPS value
-
-            time.sleep(0.03)  # Add delay for smooth real-time display
+            print(f"FPS: {fps:.2f}")
 
     except KeyboardInterrupt:
         print("Exiting simulation.")
 
-    # Release resources
     cap.release()
 
 
