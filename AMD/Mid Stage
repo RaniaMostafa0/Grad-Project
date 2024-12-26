@@ -79,8 +79,8 @@ if not cap.isOpened():
     print("Failed to open webcam")
 else:
     # Set resolution to 480p
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     # Precompute masks for optimization
     black_spot_params = (60, 40, 110, 80)
