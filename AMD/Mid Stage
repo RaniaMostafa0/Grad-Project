@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 # Optimization: Cache Gaussian kernel for reuse
 def separable_gaussian_blur(image, kernel_size, sigma):
@@ -14,7 +15,6 @@ def create_black_spot_mask(h, w, center_x, center_y, base_radius_x, base_radius_
     mask[distance < 1] = 1
     return mask
 
-# Optimized: Vectorized random mask creation and organic extensions
 def add_organic_extensions(mask, h, w):
     extension_probability = 0.006
     random_mask = (np.random.rand(h, w) < extension_probability) & (mask > 0.5) & (mask < 1)
@@ -36,39 +36,46 @@ def apply_distortion(image, center_x, center_y, distortion_radius, amplitude, wa
     h, w = image.shape[:2]
     y_indices, x_indices = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
 
-    # Compute distance from the center
     distance_from_center = np.sqrt((x_indices - center_x) ** 2 + (y_indices - center_y) ** 2)
-
-    # Mask for distortion region
     distortion_mask = distance_from_center <= distortion_radius
 
-    # Create distortion maps
     shift_x = (amplitude * np.sin(2 * np.pi * y_indices / wavelength)).astype(int)
     shift_y = (amplitude * np.cos(2 * np.pi * x_indices / wavelength)).astype(int)
 
-    # Apply distortion within mask
     new_x = np.clip(x_indices + shift_x * distortion_mask, 0, w - 1)
     new_y = np.clip(y_indices + shift_y * distortion_mask, 0, h - 1)
 
     return image[new_y, new_x]
 
-def simulate_amd_effect(image, black_spot_mask, fading_area_params, distortion_params):
-    h, w = image.shape[:2]
+def compute_fading_mask(h, w, center_x, center_y, fade_radius):
+    return create_fading_mask(h, w, center_x, center_y, fade_radius)
 
-    # Apply fading and black spot
-    faded_spot = image.astype(np.float32) * (1 - black_spot_mask[..., None])
-    fade_radius = fading_area_params[0]
-    center_x, center_y = w // 2, h // 2
-    fading_mask = create_fading_mask(h, w, center_x, center_y, fade_radius)
-    fading_mask = cv2.merge([fading_mask] * 3)
+def compute_black_spot(image, black_spot_mask):
+    return image.astype(np.float32) * (1 - black_spot_mask[..., None])
 
-    # Blend faded mask area with original image
-    faded_image = cv2.addWeighted(faded_spot * fading_mask, 1, image.astype(np.float32) * (1 - fading_mask), 1, 0)
-
-    # Apply distortion around the black spot and fading area
+def compute_distortion(faded_image, center_x, center_y, fade_radius, distortion_params):
     distortion_radius = fade_radius + 50
     amplitude, wavelength = distortion_params
-    distorted_image = apply_distortion(cv2.convertScaleAbs(faded_image), center_x, center_y, distortion_radius, amplitude, wavelength)
+    return apply_distortion(cv2.convertScaleAbs(faded_image), center_x, center_y, distortion_radius, amplitude, wavelength)
+
+def simulate_amd_effect(image, black_spot_mask, fading_area_params, distortion_params):
+    h, w = image.shape[:2]
+    center_x, center_y = w // 2, h // 2
+
+    fade_radius = fading_area_params[0]
+
+    with ThreadPoolExecutor() as executor:
+        fading_mask_future = executor.submit(compute_fading_mask, h, w, center_x, center_y, fade_radius)
+        black_spot_future = executor.submit(compute_black_spot, image, black_spot_mask)
+
+        fading_mask = fading_mask_future.result()
+        fading_mask = cv2.merge([fading_mask] * 3)
+
+        faded_spot = black_spot_future.result()
+        faded_image = cv2.addWeighted(faded_spot * fading_mask, 1, image.astype(np.float32) * (1 - fading_mask), 1, 0)
+
+        distorted_image_future = executor.submit(compute_distortion, faded_image, center_x, center_y, fade_radius, distortion_params)
+        distorted_image = distorted_image_future.result()
 
     return distorted_image
 
@@ -78,11 +85,9 @@ cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("Failed to open webcam")
 else:
-    # Set resolution to 480p
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    # Precompute masks for optimization
     black_spot_params = (60, 40, 110, 80)
     fading_area_params = (150,)
     distortion_params = (2, 100)
@@ -98,6 +103,8 @@ else:
     frame_count = 0
     total_processing_time = 0
 
+    start_time_overall = time.time()
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -105,24 +112,24 @@ else:
 
         start_time = time.time()
 
-        # Process each frame
         processed_frame = simulate_amd_effect(frame, black_spot_mask, fading_area_params, distortion_params)
 
         processing_time = time.time() - start_time
         total_processing_time += processing_time
         frame_count += 1
 
-        # Display the processed frame
+        current_time = time.time()
+        elapsed_time = current_time - start_time_overall
+        fps = frame_count / elapsed_time
+
+        cv2.putText(processed_frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
         cv2.imshow('Processed Video', processed_frame)
 
-        # Exit on pressing 'q'
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    # Calculate overall FPS
     overall_fps = frame_count / total_processing_time
     print(f"Overall FPS: {overall_fps:.2f}")
 
-    # Release resources
     cap.release()
     cv2.destroyAllWindows()
