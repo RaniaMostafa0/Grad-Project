@@ -1,0 +1,127 @@
+import cv2
+import numpy as np
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from IPython.display import display, clear_output
+from PIL import Image
+
+# Precompute blur mask for consistent downscaling and blur region offset
+def precompute_blur_mask(shape, downscale_factor=0.5, x_offset=20, y_offset=10):
+    h, w = int(shape[0] * downscale_factor), int(shape[1] * downscale_factor)
+    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
+    y, x = np.ogrid[:h, :w]
+    distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    blur_mask = np.exp(-(distance_from_center ** 2) / (2 * (w // 3.5) ** 2))
+    return blur_mask.astype(np.float32), downscale_factor
+
+# Precompute distortion map
+def precompute_distortion_map(shape, x_offset=20, y_offset=10, sine_frequency=4, cosine_frequency=4):
+    h, w = shape[:2]
+    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
+    radius = min(h, w) // 2.5
+
+    x, y = np.meshgrid(np.arange(w), np.arange(h))
+    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    fade_factor = np.clip((radius - distance) / radius, 0, 1)
+
+    distortion_strength_sin, distortion_strength_cos = 1.2, 1.5
+    amplitude_x = np.sin(2 * np.pi * (y - center_y) / h * sine_frequency) * 15 * distortion_strength_sin
+    amplitude_y = np.cos(2 * np.pi * (x - center_x) / w * cosine_frequency) * 15 * distortion_strength_cos
+
+    distortion_x = amplitude_x * fade_factor
+    distortion_y = amplitude_y * fade_factor
+
+    map_x = (x + distortion_x).astype(np.float32)
+    map_y = (y + distortion_y).astype(np.float32)
+    return map_x, map_y
+
+# Apply distortion and blur effects
+def apply_realistic_combined_effect(image, map_x, map_y, blur_mask, downscale_factor):
+    # Apply remapping for distortion
+    distorted_image = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    # Downscale the image for efficient blurring
+    small_image = cv2.resize(distorted_image, None, fx=downscale_factor, fy=downscale_factor)
+
+    # Perform Gaussian blur with an optimized kernel size
+    small_blurred = cv2.GaussianBlur(small_image, (25, 25), 0)  # Reduced kernel size for better performance
+
+    # Upscale blurred image to match original size
+    small_blurred_resized = cv2.resize(small_blurred, (image.shape[1], image.shape[0]))
+
+    # Resize blur_mask to match original image size
+    blur_mask_resized = cv2.resize(blur_mask, (image.shape[1], image.shape[0]))
+
+    # Blend the original and blurred images using the resized mask
+    mask_3d = cv2.merge([blur_mask_resized] * 3)
+    blended = distorted_image * (1 - mask_3d) + small_blurred_resized * mask_3d
+    return blended.astype(np.uint8)
+
+# Display frame in notebook
+def display_frame_in_notebook(frame, fps):
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(frame_rgb)
+    clear_output(wait=True)
+    display(pil_image)
+    print(f"FPS: {fps:.2f}")
+
+def simulate_macular_pucker_webcam():
+    cap = cv2.VideoCapture(1)
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+
+    print("Press 'Kernel Interrupt' to stop the display.")
+
+    # Initialize constants
+    target_height = 720
+    ret, sample_frame = cap.read()
+    if not ret:
+        print("Failed to capture frame for initialization.")
+        cap.release()
+        return
+
+    target_width = int(sample_frame.shape[1] * (target_height / sample_frame.shape[0]))
+    blur_mask, downscale_factor = precompute_blur_mask((target_height, target_width), x_offset=70, y_offset=40)
+    map_x, map_y = precompute_distortion_map((target_height, target_width), x_offset=70, y_offset=40)
+
+    processed_frame = None
+    processing_done = threading.Event()
+    processing_done.set()
+
+    def process_frame(frame):
+        nonlocal processed_frame
+        processed_frame = apply_realistic_combined_effect(frame, map_x, map_y, blur_mask, downscale_factor)
+        processing_done.set()
+
+    prev_time = time.time()
+    executor = ThreadPoolExecutor(max_workers=2)  # Optimize threading
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to capture frame.")
+                break
+
+            frame = cv2.resize(frame, (target_width, target_height))
+
+            if processing_done.is_set():
+                processing_done.clear()
+                executor.submit(process_frame, frame)
+
+            if processed_frame is not None:
+                curr_time = time.time()
+                elapsed_time = curr_time - prev_time
+                fps = 1 / elapsed_time if elapsed_time > 0 else 0
+                prev_time = curr_time
+                display_frame_in_notebook(processed_frame, fps)
+
+    except KeyboardInterrupt:
+        print("Exiting simulation.")
+    finally:
+        executor.shutdown()
+        cap.release()
+
+# Run the webcam simulation
+simulate_macular_pucker_webcam()
