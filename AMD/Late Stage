@@ -1,0 +1,129 @@
+import cv2
+import numpy as np
+import time
+
+def separable_gaussian_blur(image, kernel_size, sigma):
+    return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma, sigma)
+
+def generate_static_organic_extensions(mask, h, w):
+    extension_probability = 0.005
+    random_mask = (np.random.rand(h, w) < extension_probability) & (mask > 0.5) & (mask < 1)
+    random_indices = np.column_stack(np.where(random_mask))
+
+    for y_ext, x_ext in random_indices:
+        blob_radius = np.random.randint(10, 30)
+        cv2.circle(mask, (x_ext, y_ext), blob_radius, 1, -1)
+
+    return separable_gaussian_blur(mask.astype(np.float32), 51, 0)
+
+def apply_subtle_distortion(image, center_x, center_y, distortion_radius):
+    rows, cols = image.shape[:2]
+    amplitude, wavelength = 2, 100
+
+    # Generate distortion shifts
+    shift_x = (amplitude * np.sin(2 * np.pi * np.arange(rows)[:, None] / wavelength)).astype(int)
+    shift_y = (amplitude * np.cos(2 * np.pi * np.arange(cols)[None, :] / wavelength)).astype(int)
+
+    # Create remapping indices
+    y_indices, x_indices = np.meshgrid(np.arange(rows), np.arange(cols), indexing='ij')
+    distances = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
+
+    # Apply distortion only within the specified radius
+    within_radius = distances <= distortion_radius
+    new_x = np.clip(x_indices + shift_x * within_radius, 0, cols - 1)
+    new_y = np.clip(y_indices + shift_y * within_radius, 0, rows - 1)
+
+    # Apply remapping
+    distorted_image = image.copy()
+    distorted_image[within_radius] = image[new_y[within_radius], new_x[within_radius]]
+
+    return distorted_image
+
+def process_frame(frame, mask, black_spot_size, fade_area_size):
+    h, w = frame.shape[:2]
+
+    # Downscale the frame for black spot and fading processing
+    small_frame = cv2.resize(frame, (640, 360))
+    small_mask = cv2.resize(mask, (640, 360))
+
+    # Apply the black spot and fading mask to the downscaled frame
+    faded_frame = (small_frame * small_mask[..., None]).astype(np.uint8)
+
+    # Upscale the frame back to the original resolution
+    upscaled_frame = cv2.resize(faded_frame, (w, h))
+
+    return upscaled_frame
+
+def apply_distortion_to_frame(frame, black_spot_size, fade_area_size):
+    h, w = frame.shape[:2]
+    center_x, center_y = w // 2, h // 2
+
+    # Apply subtle distortion to the upscaled frame
+    distortion_radius = black_spot_size + fade_area_size + 50
+    distorted_frame = apply_subtle_distortion(frame, center_x, center_y, distortion_radius)
+
+    return distorted_frame
+
+# Real-Time Processing with Downscaling and Subtle Distortion
+def real_time_black_spot(black_spot_size, fade_area_size):
+    # Initialize webcam
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+    # Generate static organic extensions
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Unable to read from webcam.")
+        cap.release()
+        return
+
+    h, w = frame.shape[:2]
+    y_indices, x_indices = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
+    distances = np.sqrt((x_indices - w // 2)**2 + (y_indices - h // 2)**2)
+    mask = np.ones((h, w), dtype=np.float32)
+    mask[distances <= black_spot_size] = 0
+    fade_zone = (distances > black_spot_size) & (distances <= black_spot_size + fade_area_size)
+    mask[fade_zone] = (distances[fade_zone] - black_spot_size) / fade_area_size
+    mask = generate_static_organic_extensions(mask, h, w)
+
+    frame_count = 0
+    start_time = time.time()
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Apply black spot and fading processing with downscaling
+        processed_frame = process_frame(frame, mask, black_spot_size, fade_area_size)
+
+        # Apply distortion to the upscaled frame
+        final_frame = apply_distortion_to_frame(processed_frame, black_spot_size, fade_area_size)
+
+        # Display the processed frame only
+        cv2.imshow("Processed", final_frame)
+
+        frame_count += 1
+
+        # Exit on 'q' key
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    # Calculate and display FPS
+    end_time = time.time()
+    total_time = end_time - start_time
+    fps = frame_count / total_time
+    print(f"Processed {frame_count} frames in {total_time:.2f} seconds. Overall FPS: {fps:.2f}")
+
+# Main function to run the simulation
+def main():
+    black_spot_size = 180  # Adjust black spot size
+    fade_area_size = 190  # Adjust fade area size
+    real_time_black_spot(black_spot_size, fade_area_size)
+
+if __name__ == "__main__":
+    main()
