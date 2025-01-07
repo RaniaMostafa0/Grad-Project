@@ -1,0 +1,153 @@
+import cv2
+import numpy as np
+import time
+from IPython.display import display, clear_output
+from PIL import Image
+from threading import Thread, Event
+from queue import Queue
+
+
+def apply_glare_and_halo(image, mask, halo_intensity=0.7, glare_intensity=0.5, glare_blur=11):
+    """
+    Applies glare and halo effect to the bright areas of the image.
+    """
+    mask_3channel = cv2.merge([mask, mask, mask])
+
+    # Add a halo effect by blurring the mask
+    halo_effect = cv2.GaussianBlur(mask_3channel, (glare_blur, glare_blur), 0)
+
+    # Apply the halo effect with blending
+    glare_halo = cv2.addWeighted(image, 1, halo_effect, halo_intensity, 0)
+
+    # Add glare by blending the bright mask with an intense light overlay
+    glare_overlay = np.full_like(image, (255, 255, 255), dtype=np.uint8)  # White overlay
+    glare_effect = cv2.addWeighted(image, 1 - glare_intensity, glare_overlay, glare_intensity, 0)
+
+    # Combine glare effect and halo effect
+    final_image = cv2.addWeighted(glare_halo, 1, glare_effect, 0.5, 0)
+
+    return final_image
+
+
+def decrease_contrast(image, factor=0.5):
+    """
+    Reduces contrast by blending the image with its mean gray value.
+    """
+    gray_mean = np.mean(image, dtype=np.float32)
+    blended = cv2.addWeighted(image, factor, np.full_like(image, gray_mean, dtype=np.uint8), 1 - factor, 0)
+    return blended
+
+
+def process_frame(frame):
+    """
+    Process a single frame with glare, halo, and contrast adjustment.
+    """
+    # Convert to grayscale for mask generation
+    gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # Create a mask for bright areas
+    _, bright_mask = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY)
+
+    # Apply glare and halo effect
+    glare_halo = apply_glare_and_halo(frame, bright_mask)
+
+    # Decrease contrast for the final frame
+    final_frame = decrease_contrast(glare_halo)
+
+    return final_frame
+
+
+def display_frame_in_notebook(frame, max_width=1280, max_height=720):
+    """
+    Display a frame inline in Jupyter Notebook without stretching, maintaining aspect ratio.
+    """
+    height, width = frame.shape[:2]
+    scale = min(max_width / width, max_height / height)
+    new_width, new_height = int(width * scale), int(height * scale)
+
+    resized_frame = cv2.resize(frame, (new_width, new_height))
+    frame_rgb = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(frame_rgb)
+
+    clear_output(wait=True)
+    display(pil_image)
+
+
+def video_reader(cap, frame_queue, stop_event):
+    """
+    Reads frames from the video capture and pushes them to a queue.
+    """
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            stop_event.set()
+            break
+        frame_queue.put(frame)
+
+
+def video_processor(frame_queue, stop_event, max_width=1280, max_height=720):
+    """
+    Processes frames in real-time and displays them in Jupyter Notebook.
+    """
+    total_processing_time = 0
+    frame_count = 0
+
+    try:
+        while not stop_event.is_set() or not frame_queue.empty():
+            if not frame_queue.empty():
+                frame = frame_queue.get()
+
+                start_time = time.time()
+                processed_frame = process_frame(frame)
+                display_frame_in_notebook(processed_frame, max_width, max_height)
+
+                processing_time_frame = time.time() - start_time
+                total_processing_time += processing_time_frame
+                frame_count += 1
+
+                # Calculate and print FPS
+                fps = 1 / processing_time_frame
+                print(f"FPS: {fps:.2f}", end='\r')
+
+    except KeyboardInterrupt:
+        stop_event.set()
+
+    finally:
+        if frame_count > 0:
+            avg_processing_time = total_processing_time / frame_count
+            overall_fps = frame_count / total_processing_time
+            print(f"\nAverage processing time per frame: {avg_processing_time:.4f} seconds")
+            print(f"Real-time processing FPS: {overall_fps:.2f}")
+
+
+def realtime_video_processing():
+    """
+    Real-time processing of video frames from a webcam or video file using PIL for display.
+    """
+    cap = cv2.VideoCapture(1)  # Use 0 for default webcam
+
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+
+    frame_queue = Queue(maxsize=10)  # Queue to hold frames
+    stop_event = Event()  # Event to signal threads to stop
+
+    # Start threads for reading and processing
+    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
+    reader_thread.start()
+
+    try:
+        video_processor(frame_queue, stop_event)
+
+    except KeyboardInterrupt:
+        print("\nExiting real-time video processing.")
+
+    finally:
+        stop_event.set()
+        reader_thread.join()
+        cap.release()
+
+
+# Run real-time processing
+realtime_video_processing()
