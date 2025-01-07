@@ -1,0 +1,104 @@
+import cv2
+import numpy as np
+import time
+from IPython.display import display, clear_output
+from PIL import Image
+
+
+# Define the glare and halo effect function
+def apply_glare_and_halo(image, mask, halo_intensity=300.0):
+    """
+    Apply glare and halo effect to the bright areas of the image.
+    """
+    brightened = cv2.addWeighted(image, 1, np.ones_like(image) * 255, halo_intensity / 255.0, 0)
+    glare_halo = cv2.bitwise_and(brightened, mask)
+    glare_halo = cv2.addWeighted(image, 1, glare_halo, 1.5, 0)
+    return glare_halo
+
+
+def display_frame_in_notebook(frame, max_width=1280, max_height=720):
+    """
+    Display a frame inline in Jupyter Notebook without stretching, maintaining aspect ratio.
+    """
+    height, width = frame.shape[:2]
+    scale = min(max_width / width, max_height / height)
+    new_width, new_height = int(width * scale), int(height * scale)
+
+    resized_frame = cv2.resize(frame, (new_width, new_height))
+    frame_rgb = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(frame_rgb)
+
+    clear_output(wait=True)
+    display(pil_image)
+
+
+def realtime_video_processing():
+    """
+    Real-time processing of video frames from a webcam using glare and halo effects.
+    """
+    cap = cv2.VideoCapture(1)  # Use 0 for default webcam
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+
+    print("Press 'Kernel Interrupt' to stop the simulation.")
+
+    total_processing_time = 0
+    frame_count = 0
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to read frame.")
+                break
+
+            start_time = time.time()
+
+            # Convert to RGB for processing
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Convert the image to grayscale to detect bright areas
+            gray_image = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+
+            # Threshold to detect bright areas
+            _, bright_areas = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY)
+
+            # Create a mask for bright areas
+            bright_mask = cv2.merge([bright_areas, bright_areas, bright_areas])
+
+            # Apply the glare effect
+            glare_halo = apply_glare_and_halo(frame_rgb, bright_mask)
+
+            # Combine the glare effect with the original image
+            final_frame = cv2.addWeighted(frame_rgb, 1, glare_halo, 0.7, 0)
+
+            # Convert back to BGR for display
+            final_frame_bgr = cv2.cvtColor(final_frame, cv2.COLOR_RGB2BGR)
+
+            # Display the processed frame in Jupyter Notebook
+            display_frame_in_notebook(final_frame_bgr)
+
+            # Calculate and print FPS
+            processing_time = time.time() - start_time
+            total_processing_time += processing_time
+            frame_count += 1
+            fps = 1 / processing_time
+            print(f"FPS: {fps:.2f}", end='\r')
+
+    except KeyboardInterrupt:
+        print("\nExiting real-time video processing.")
+
+    finally:
+        cap.release()
+        if frame_count > 0:
+            average_processing_time = total_processing_time / frame_count
+            overall_fps = frame_count / total_processing_time
+            print(f"\nTotal frames processed: {frame_count}")
+            print(f"Total processing time: {total_processing_time:.4f} seconds")
+            print(f"Average processing time per frame: {average_processing_time:.4f} seconds")
+            print(f"Real-time processing FPS: {overall_fps:.2f}")
+
+
+# Run real-time processing
+realtime_video_processing()
