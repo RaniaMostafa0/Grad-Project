@@ -2,6 +2,10 @@ import cv2
 import numpy as np
 import time
 
+# Enable GPU acceleration in OpenCV
+cv2.setUseOptimized(True)
+cv2.ocl.setUseOpenCL(True)
+
 def separable_gaussian_blur(image, kernel_size, sigma):
     return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma, sigma)
 
@@ -42,36 +46,31 @@ def apply_subtle_distortion(image, center_x, center_y, distortion_radius):
 def process_frame(frame, mask, black_spot_size, fade_area_size):
     h, w = frame.shape[:2]
 
-    # Downscale the frame for black spot and fading processing
+    # Downscale and apply mask
     small_frame = cv2.resize(frame, (640, 360))
     small_mask = cv2.resize(mask, (640, 360))
 
-    # Apply the black spot and fading mask to the downscaled frame
     faded_frame = (small_frame * small_mask[..., None]).astype(np.uint8)
 
-    # Upscale the frame back to the original resolution
-    upscaled_frame = cv2.resize(faded_frame, (w, h))
-
-    return upscaled_frame
+    # Upscale back
+    return cv2.resize(faded_frame, (w, h))
 
 def apply_distortion_to_frame(frame, black_spot_size, fade_area_size):
     h, w = frame.shape[:2]
     center_x, center_y = w // 2, h // 2
 
-    # Apply subtle distortion to the upscaled frame
     distortion_radius = black_spot_size + fade_area_size + 50
     distorted_frame = apply_subtle_distortion(frame, center_x, center_y, distortion_radius)
 
     return distorted_frame
 
-# Real-Time Processing with Downscaling and Subtle Distortion
 def real_time_black_spot(black_spot_size, fade_area_size):
     # Initialize webcam
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    # Generate static organic extensions
+    # Generate mask
     ret, frame = cap.read()
     if not ret:
         print("Error: Unable to read from webcam.")
@@ -95,13 +94,10 @@ def real_time_black_spot(black_spot_size, fade_area_size):
         if not ret:
             break
 
-        # Apply black spot and fading processing with downscaling
         processed_frame = process_frame(frame, mask, black_spot_size, fade_area_size)
-
-        # Apply distortion to the upscaled frame
         final_frame = apply_distortion_to_frame(processed_frame, black_spot_size, fade_area_size)
 
-        # Display the processed frame only
+        # Display the processed frame
         cv2.imshow("Processed", final_frame)
 
         frame_count += 1
@@ -119,7 +115,6 @@ def real_time_black_spot(black_spot_size, fade_area_size):
     fps = frame_count / total_time
     print(f"Processed {frame_count} frames in {total_time:.2f} seconds. Overall FPS: {fps:.2f}")
 
-# Main function to run the simulation
 def main():
     black_spot_size = 180  # Adjust black spot size
     fade_area_size = 190  # Adjust fade area size
