@@ -1,0 +1,92 @@
+import cv2
+import numpy as np
+import time
+from IPython.display import display, clear_output
+from PIL import Image
+
+def process_frame(frame):
+    """
+    Process a single frame to simulate nuclear cataract symptoms.
+    """
+    # 1. Gaussian Blur (efficient kernel size for performance)
+    kernel_size = 15
+    blurred_frame = cv2.GaussianBlur(frame, (kernel_size, 1), 5)  # Horizontal pass
+    blurred_frame = cv2.GaussianBlur(blurred_frame, (1, kernel_size), 5)  # Vertical pass
+
+    # 2. Yellow Tint
+    yellow_tint = np.array([1.0, 1.0, 0.7], dtype=np.float32)
+    yellow_frame = blurred_frame * yellow_tint
+    yellow_frame = np.clip(yellow_frame, 0, 255).astype(np.uint8)
+
+    # 3. Reduce Contrast
+    contrast_reduced_frame = cv2.convertScaleAbs(yellow_frame, alpha=0.65, beta=30)
+
+    return contrast_reduced_frame
+
+def display_frame_in_notebook(frame, max_width=1280, max_height=720):
+    """
+    Display a frame inline in Jupyter Notebook without stretching, maintaining aspect ratio.
+    """
+    height, width = frame.shape[:2]
+    scale = min(max_width / width, max_height / height)
+    new_width, new_height = int(width * scale), int(height * scale)
+
+    resized_frame = cv2.resize(frame, (new_width, new_height))
+    frame_rgb = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(frame_rgb)
+
+    clear_output(wait=True)
+    display(pil_image)
+
+def simulate_cataract_realtime(webcam_index):
+    # Open the webcam
+    cap = cv2.VideoCapture(webcam_index)
+
+    if not cap.isOpened():
+        print("Error: Unable to access webcam.")
+        return
+
+    # Track FPS
+    frame_count = 0
+    total_time = 0
+
+    print("Press 'Kernel Interrupt' to stop the simulation.")
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Error: Unable to read frame from webcam.")
+                break
+
+            # Start timing
+            start_time = time.time()
+
+            # Process frame
+            processed_frame = process_frame(frame)
+
+            # Display the processed frame in Jupyter Notebook
+            display_frame_in_notebook(processed_frame)
+
+            # Calculate and print FPS
+            processing_time = time.time() - start_time
+            total_time += processing_time
+            frame_count += 1
+            fps = 1 / processing_time
+            print(f"FPS: {fps:.2f}", end='\r')
+
+    except KeyboardInterrupt:
+        print("\nExiting real-time video processing.")
+
+    finally:
+        cap.release()
+        if frame_count > 0:
+            average_processing_time = total_time / frame_count
+            overall_fps = frame_count / total_time
+            print(f"\nTotal frames processed: {frame_count}")
+            print(f"Total processing time: {total_time:.4f} seconds")
+            print(f"Average processing time per frame: {average_processing_time:.4f} seconds")
+            print(f"Real-time processing FPS: {overall_fps:.2f}")
+
+# Example usage
+simulate_cataract_realtime(1)
