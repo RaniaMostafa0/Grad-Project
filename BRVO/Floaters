@@ -1,0 +1,185 @@
+import cv2
+import numpy as np
+import pygame
+import time
+
+def separable_gaussian_blur(image, kernel_size, sigma):
+    """
+    Applies separable Gaussian blur using two 1D convolutions.
+    """
+    # Generate 1D Gaussian kernel
+    k = cv2.getGaussianKernel(kernel_size, sigma)
+    
+    # Apply Gaussian blur separately in X and Y directions
+    blurred = cv2.filter2D(image, -1, k)  # Blur in X direction
+    blurred = cv2.filter2D(blurred, -1, k.T)  # Blur in Y direction
+    return blurred
+
+def generate_spot_positions(h, w, num_spots):
+    """
+    Generates fixed spot positions with fixed transparency and radii.
+    """
+    positions = []
+    
+    for _ in range(num_spots):
+        attempts = 0
+        while True:
+            center_x = np.random.randint(0, w)
+            center_y = np.random.randint(0, h)
+            base_radius_x = np.random.randint(10, 40)
+            base_radius_y = np.random.randint(20, 50)
+            transparency = np.random.uniform(0.4, 0.6)  # Fixed transparency for each spot
+
+            # Check for overlap with existing spots
+            overlap = False
+            for px, py, rx, ry, _ in positions:
+                if abs(center_x - px) < (base_radius_x + rx) and abs(center_y - py) < (base_radius_y + ry):
+                    overlap = True
+                    break
+
+            if not overlap:
+                positions.append((center_x, center_y, base_radius_x, base_radius_y, transparency))
+                break
+
+            attempts += 1
+            if attempts > 100:
+                # Avoid infinite loop in case of too many overlaps
+                break
+
+    return positions
+
+def create_static_mask(h, w, spot_positions):
+    """
+    Creates a static mask based on pre-generated spot positions and their properties.
+    """
+    mask = np.zeros((h, w), dtype=np.float32)
+
+    for (center_x, center_y, base_radius_x, base_radius_y, transparency) in spot_positions:
+        # Create elliptical distances
+        y, x = np.ogrid[:h, :w]
+        distance_x = ((x - center_x) / base_radius_x) ** 2
+        distance_y = ((y - center_y) / base_radius_y) ** 2
+        distance = np.sqrt(distance_x + distance_y)
+
+        # Update mask for this spot with fixed transparency
+        mask[distance < 1] = np.maximum(mask[distance < 1], transparency)  # Fully darken inside the inner oval
+        transition_region = (distance >= 1) & (distance < 2)
+        mask[transition_region] = np.maximum(mask[transition_region], transparency * (1 - ((distance[transition_region] - 1) / 1)))
+
+    # Clip mask values to ensure they are in [0, 1]
+    mask = np.clip(mask, 0, 1)
+
+    # Apply separable Gaussian blur to smooth the mask
+    kernel_size = 101
+    sigma = 20
+    mask = separable_gaussian_blur(mask, kernel_size, sigma)
+
+    return mask
+
+def main():
+    # Initialize webcam capture (0 is the default camera)
+    cap = cv2.VideoCapture(0)
+
+    if not cap.isOpened():
+        print("Error: Could not open webcam.")
+        return
+
+    # Set the resolution to 1280x720
+    desired_width = 1280
+    desired_height = 720
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, desired_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, desired_height)
+
+    num_spots = 50  # Increased number of spots to 30
+
+    # Read one frame to get the dimensions
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to grab initial frame.")
+        cap.release()
+        return
+
+    frame = cv2.resize(frame, (desired_width, desired_height))
+    h, w = frame.shape[:2]
+
+    # Generate fixed spot positions with fixed transparency
+    spot_positions = generate_spot_positions(h, w, num_spots)
+
+    # Create the static mask once
+    mask = create_static_mask(h, w, spot_positions)
+
+    # Precompute (1 - mask) for efficiency
+    inverse_mask = (1 - mask)[..., np.newaxis].astype(np.float32)
+
+    # Initialize FPS calculation variables
+    frame_count = 0
+    start_time = time.time()
+
+    # Initialize Pygame
+    pygame.init()
+    
+    # Set up full-screen display with 1280x720 resolution
+    # Note: Some systems may scale the resolution to fit the screen.
+    window = pygame.display.set_mode((w, h), pygame.FULLSCREEN)
+    pygame.display.set_caption("AMD Multiple Spots Effect with Pygame")
+    clock = pygame.time.Clock()
+
+    running = True
+    while running:
+        # Handle Pygame events
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False  # Allow exiting with the Escape key
+
+        # Capture frame-by-frame
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame.")
+            break
+
+        # Resize to 1280x720 if not already
+        frame = cv2.resize(frame, (desired_width, desired_height))
+
+        # Convert frame from BGR to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Convert to float32 for processing
+        frame_float = frame_rgb.astype(np.float32)
+
+        # Apply the static mask to darken the areas
+        faded_spots = frame_float * inverse_mask
+        final_result = faded_spots.astype(np.uint8)
+
+        # Convert to Pygame surface
+        # Pygame expects the array in (width, height, color) order
+        surface = pygame.surfarray.make_surface(final_result.swapaxes(0, 1))
+
+        # Blit the surface onto the window
+        window.blit(surface, (0, 0))
+        pygame.display.flip()
+
+        # Increment frame count
+        frame_count += 1
+
+        # Optional: Cap the frame rate to reduce CPU usage
+        clock.tick(60)  # Limit to 60 FPS
+
+    # Calculate total processing time
+    end_time = time.time()
+    total_time = end_time - start_time
+    average_fps = frame_count / total_time if total_time > 0 else 0
+
+    # Print the average FPS
+    print(f"\nTotal Frames Processed: {frame_count}")
+    print(f"Total Processing Time: {total_time:.2f} seconds")
+    print(f"Average FPS: {average_fps:.2f}")
+
+    # Release resources
+    cap.release()
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
