@@ -1,0 +1,81 @@
+import cv2
+import numpy as np
+import time
+
+# Enable GPU acceleration in OpenCV
+cv2.setUseOptimized(True)
+cv2.ocl.setUseOpenCL(True)
+
+def apply_realistic_macular_pucker_effect(image):
+    h, w = image.shape[:2]
+    center_x, center_y = w // 2, h // 2
+
+    # Step 1: Create Gradual Blurring Mask
+    # Optimization: Precompute grid indices efficiently
+    y_indices, x_indices = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
+    distance_from_center = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
+
+    # Use a smaller sigma for quicker falloff
+    sigma = w // 4
+    blur_mask = np.exp(-(distance_from_center**2) / (2 * sigma**2)).astype(np.float32)
+    blur_mask = cv2.normalize(blur_mask, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+
+    # Step 2: Apply Separable Gaussian Blur
+    # Optimization: Use precomputed kernel sizes for performance
+    gaussian_kernel = cv2.getGaussianKernel(31, 0)
+    heavy_blur = cv2.sepFilter2D(image, -1, gaussian_kernel, gaussian_kernel)
+
+    # Step 3: Blend with Gradual Mask
+    # Optimization: Avoid converting blur_mask to uint8 unnecessarily
+    blur_mask_3d = cv2.merge([blur_mask] * 3)
+    blurred_part = cv2.multiply(heavy_blur.astype(np.float32), blur_mask_3d)
+    original_part = cv2.multiply(image.astype(np.float32), 1 - blur_mask_3d)
+    final_img = cv2.add(blurred_part, original_part).astype(np.uint8)
+
+    return final_img
+
+def main():
+    # Open webcam
+    cap = cv2.VideoCapture(0)
+
+    # Set resolution to 720p
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+    if not cap.isOpened():
+        print("Error: Unable to access the webcam.")
+        return
+
+    frame_count = 0
+    start_time = time.time()
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Unable to read frame from the webcam.")
+            break
+
+        # Apply the macular pucker effect
+        processed_frame = apply_realistic_macular_pucker_effect(frame)
+
+        # Display the processed frame
+        cv2.imshow('Macular Pucker Effect', processed_frame)
+
+        frame_count += 1
+
+        # Break the loop if 'q' is pressed
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    # Calculate and display FPS
+    end_time = time.time()
+    total_time = end_time - start_time
+    fps = frame_count / total_time
+    print(f"Processed {frame_count} frames in {total_time:.2f} seconds. Overall FPS: {fps:.2f}")
+
+    # Release resources
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
