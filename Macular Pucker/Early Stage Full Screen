@@ -1,0 +1,132 @@
+import cv2
+import numpy as np
+import time
+import pygame
+from pygame.locals import *
+import threading
+
+def precompute_blur_mask(shape, downscale_factor=0.5, x_offset=20, y_offset=10):
+    """Precompute a static Gaussian blur mask with downscaling and shifted center."""
+    h, w = int(shape[0] * downscale_factor), int(shape[1] * downscale_factor)
+    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
+    
+    y, x = np.ogrid[:h, :w]
+    distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    blur_mask = np.exp(-(distance_from_center ** 2) / (2 * (w // 4) ** 2))
+    
+    return blur_mask.astype(np.float32), downscale_factor
+
+def apply_realistic_macular_pucker_effect(image, blur_mask, downscale_factor):
+    """Apply the central blurring effect with downscaling."""
+    small_image = cv2.resize(image, None, fx=downscale_factor, fy=downscale_factor)
+    small_blurred = cv2.GaussianBlur(small_image, (31, 31), 0)
+    mask_3d = cv2.merge([blur_mask] * 3)
+    blended_small = cv2.convertScaleAbs(
+        small_image * (1 - mask_3d) + small_blurred * mask_3d
+    )
+    return cv2.resize(blended_small, (image.shape[1], image.shape[0]))
+
+def simulate_macular_pucker_webcam():
+    # Initialize Pygame
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
+    pygame.display.set_caption('Macular Pucker Simulation')
+    screen_w = pygame.display.Info().current_w
+    screen_h = pygame.display.Info().current_h
+
+    # Open webcam and configure
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+
+    # Precompute blur mask
+    ret, sample_frame = cap.read()
+    if not ret:
+        print("Failed to capture frame for mask creation.")
+        cap.release()
+        pygame.quit()
+        return
+
+    target_height = 720
+    target_width = int(sample_frame.shape[1] * (target_height / sample_frame.shape[0]))
+    frame_resized = cv2.resize(sample_frame, (target_width, target_height))
+    blur_mask, downscale_factor = precompute_blur_mask(frame_resized.shape, x_offset=70, y_offset=40)
+
+    # Threading variables
+    processed_frame = None
+    processing_lock = threading.Lock()
+    latest_frame = None
+
+    def processing_thread():
+        """Background processing thread"""
+        nonlocal processed_frame, latest_frame
+        while True:
+            with processing_lock:
+                if latest_frame is not None:
+                    frame = latest_frame.copy()
+                    latest_frame = None
+                else:
+                    time.sleep(0.001)
+                    continue
+            
+            processed = apply_realistic_macular_pucker_effect(frame, blur_mask, downscale_factor)
+            with processing_lock:
+                processed_frame = processed
+
+    # Start processing thread
+    thread = threading.Thread(target=processing_thread, daemon=True)
+    thread.start()
+
+    try:
+        while True:
+            start_time = time.time()
+            
+            # Capture frame
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to capture frame.")
+                break
+
+            # Resize and update latest frame
+            frame_resized = cv2.resize(frame, (target_width, target_height))
+            with processing_lock:
+                latest_frame = frame_resized
+
+            # Display processed frame if available
+            display_frame = None
+            with processing_lock:
+                if processed_frame is not None:
+                    display_frame = processed_frame.copy()
+
+            if display_frame is not None:
+                # Convert for Pygame display
+                rgb_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+                fullscreen_frame = cv2.resize(rgb_frame, (screen_w, screen_h))
+                
+                # Display in Pygame
+                pygame_frame = pygame.surfarray.make_surface(np.rot90(fullscreen_frame))
+                screen.blit(pygame_frame, (0, 0))
+                pygame.display.flip()
+
+            # Handle exit events
+            for event in pygame.event.get():
+                if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                    raise KeyboardInterrupt
+
+            # Maintain FPS
+            elapsed = time.time() - start_time
+            if elapsed < 0.033:  # ~30 FPS
+                time.sleep(0.033 - elapsed)
+            
+            print(f"FPS: {1/(time.time()-start_time):.1f}", end='\r')
+
+    except KeyboardInterrupt:
+        print("\nExiting simulation.")
+    
+    finally:
+        cap.release()
+        pygame.quit()
+
+if __name__ == "__main__":
+    simulate_macular_pucker_webcam()
