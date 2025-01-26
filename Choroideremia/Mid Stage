@@ -1,0 +1,239 @@
+import cv2
+import numpy as np
+import time
+import pygame
+import sys
+
+# ================== Tunnel Vision Functions ==================
+
+def separable_gaussian_blur(image, kernel_size, sigma):
+    """Apply Gaussian blur more efficiently."""
+    return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
+
+def simulate_night_blindness(image):
+    """Simulate moderate night blindness for the middle stage."""
+    darkened_image = image * 0.4  # Stronger darkening
+    darkened_image = np.clip(darkened_image, 0, 255)
+    blurred_image = separable_gaussian_blur(darkened_image, 25, 8)
+    return blurred_image.astype(np.uint8)
+
+def detect_light_condition(frame):
+    """Detect the average brightness of the frame using the green channel."""
+    avg_brightness = np.mean(frame[:, :, 1])  # Use the green channel for brightness approximation
+    return avg_brightness
+
+def create_static_irregular_mask(shape, radius_scale=0.9, noise_strength=0.4, edge_fade_size=199, seed=42):
+    """
+    Create a static irregular mask for tunnel vision.
+    """
+    np.random.seed(seed)  # Ensure mask is static across frames
+    rows, cols = shape
+    center_x, center_y = cols // 2, rows // 2
+    base_radius = int(min(center_x, center_y) * radius_scale)
+
+    # Create polar coordinates
+    y, x = np.ogrid[:rows, :cols]
+    angle = np.arctan2(y - center_y, x - center_x)
+    distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+
+    # Generate irregular radii using random perturbations
+    random_radii = base_radius * (1 + noise_strength * (np.random.rand(360) - 0.5))
+    radius_map = np.interp((np.degrees(angle) + 360) % 360, np.arange(360), random_radii)
+
+    # Create an irregular mask
+    irregular_mask = (distance_from_center < radius_map).astype(np.float32)
+
+    # Smooth the edges of the mask
+    irregular_mask = cv2.GaussianBlur(irregular_mask, (edge_fade_size, edge_fade_size), 0)
+
+    return irregular_mask
+
+def apply_static_tunnel_vision(image_rgb, static_mask):
+    """
+    Apply a precomputed static irregular mask to the image.
+    """
+    # Since mask and image size are fixed, no need to resize per frame
+    vision_image = image_rgb.astype(np.float32)
+    vision_image *= static_mask[:, :, np.newaxis]  # Vectorized multiplication
+    vision_image = np.clip(vision_image, 0, 255)
+    return vision_image.astype(np.uint8)
+
+# ================== Image Processing ==================
+
+def resize_image(image, desired_width=1280, desired_height=720):
+    """
+    Resizes the image to the desired dimensions.
+    """
+    resized_image = cv2.resize(image, (desired_width, desired_height), interpolation=cv2.INTER_AREA)
+    return resized_image
+
+# ================== Pygame Display and FPS Calculation ==================
+
+def test_webcam_indices(max_index=4):
+    """
+    Test and return available webcam indices.
+    """
+    available_cams = []
+    for i in range(max_index):
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened():
+            print(f"Webcam found at index {i}")
+            available_cams.append(i)
+            cap.release()
+        else:
+            print(f"No webcam found at index {i}")
+    return available_cams
+
+def main():
+    # ================== Check Available Webcams ==================
+    print("Checking available webcams...")
+    available_cameras = test_webcam_indices()
+    if not available_cameras:
+        print("No webcams detected. Please check your connections and try again.")
+        return
+    else:
+        print(f"Available webcam indices: {available_cameras}")
+    
+    # Select the first available webcam (you can modify this as needed)
+    webcam_index = available_cameras[0]
+    print(f"Using webcam at index {webcam_index}")
+    
+    # Initialize webcam capture
+    cap = cv2.VideoCapture(webcam_index)
+    if not cap.isOpened():
+        print(f"Failed to open webcam at index {webcam_index}.")
+        return
+
+    # Set desired frame width and height
+    desired_width = 1280
+    desired_height = 720
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, desired_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, desired_height)
+
+    # Allow the camera to warm up
+    time.sleep(2.0)
+
+    # Capture a single frame to get frame dimensions
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to capture frame for mask creation.")
+        cap.release()
+        return
+
+    # Resize the frame if necessary
+    frame = resize_image(frame, desired_width, desired_height)
+
+    # ================== Precompute Static Mask ==================
+    print("Creating static tunnel vision mask...")
+    static_mask = create_static_irregular_mask(
+        frame.shape[:2],
+        radius_scale=0.9,
+        noise_strength=0.7,
+        edge_fade_size=199,
+        seed=42  # Fixed seed to keep the mask static
+    )
+
+    # ================== Apply Static Mask Once ==================
+    # Convert mask to float32 outside the loop for efficiency
+    static_mask_float = static_mask.astype(np.float32)
+
+    # ================== Initialize Pygame ==================
+    print("Initializing Pygame...")
+    pygame.init()
+    pygame.display.set_caption("Real-Time Tunnel Vision")
+    
+    # Set up the display in full screen with 1280x720 resolution
+    screen = pygame.display.set_mode((desired_width, desired_height), pygame.FULLSCREEN)
+    
+    # Initialize font for FPS display
+    pygame.font.init()
+    font = pygame.font.SysFont("Arial", 24)
+    
+    # Create a clock object to manage FPS
+    clock = pygame.time.Clock()
+    
+    # ================== Real-Time Processing Loop ==================
+    print("Starting real-time processing. Press 'ESC' to exit.")
+    
+    # Variables for FPS calculation optimization
+    fps_display_interval = 1  # seconds
+    fps_timer = time.time()
+    fps_count = 0
+    fps = 0
+    
+    running = True
+    while running:
+        # Handle Pygame events
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            # Exit on pressing ESC
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+
+        # Capture frame-by-frame
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to capture frame.")
+            break
+
+        # Resize the frame to desired dimensions
+        frame = resize_image(frame, desired_width, desired_height)
+
+        # Start timing before processing
+        start_time = time.time()
+
+        # ================== Detect Brightness and Apply Effects ==================
+        avg_brightness = detect_light_condition(frame)
+
+        if avg_brightness < 100:  # Dark condition
+            darkened_frame = simulate_night_blindness(frame)
+            tunnel_vision_image = apply_static_tunnel_vision(darkened_frame, static_mask_float)
+        else:  # Light condition
+            tunnel_vision_image = apply_static_tunnel_vision(frame, static_mask_float)
+
+        # ================== End Timing After Processing ==================
+        end_time = time.time()
+
+        # Calculate elapsed time
+        elapsed_time = end_time - start_time
+
+        # Update FPS every fps_display_interval seconds
+        fps_count += 1
+        if (end_time - fps_timer) > fps_display_interval:
+            fps = fps_count / (end_time - fps_timer)
+            fps_timer = end_time
+            fps_count = 0
+
+        # ================== Convert to Pygame Surface ==================
+        # Convert BGR (OpenCV) to RGB
+        tunnel_vision_rgb = cv2.cvtColor(tunnel_vision_image, cv2.COLOR_BGR2RGB)
+        # Rotate the image for correct orientation in Pygame
+        tunnel_vision_rgb = np.rot90(tunnel_vision_rgb)
+        # Convert to Pygame surface
+        frame_surface = pygame.surfarray.make_surface(tunnel_vision_rgb)
+
+        # ================== Render to Pygame Window ==================
+        screen.blit(frame_surface, (0, 0))
+
+        # Render FPS (only update once per interval)
+        fps_text = font.render(f"FPS: {fps:.2f}", True, (255, 255, 255))
+        screen.blit(fps_text, (10, desired_height - 30))  # Position at bottom-left
+
+        # Update the display
+        pygame.display.flip()
+
+        # Increment FPS counter
+        fps_count += 1
+
+        # Cap the frame rate at 60 FPS (will adapt automatically)
+        clock.tick(60)
+
+    # Release resources
+    cap.release()
+    pygame.quit()
+    sys.exit()
+
+if __name__ == "__main__":
+    main()
