@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 import time
+import pygame
+from pygame.locals import *
 
 # Enable GPU acceleration in OpenCV
 cv2.setUseOptimized(True)
@@ -63,6 +65,17 @@ def apply_distortion_to_frame(frame, black_spot_size, fade_area_size):
     return apply_subtle_distortion(frame, center_x, center_y, distortion_radius)
 
 def real_time_black_spot(black_spot_size, fade_area_size):
+    # Initialize Pygame
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
+    pygame.display.set_caption('Black Spot Effect')
+
+    # Get screen dimensions
+    screen_info = pygame.display.Info()
+    screen_w = screen_info.current_w
+    screen_h = screen_info.current_h
+
+    # Open webcam
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
@@ -71,6 +84,7 @@ def real_time_black_spot(black_spot_size, fade_area_size):
     if not ret:
         print("Error: Unable to read from webcam.")
         cap.release()
+        pygame.quit()
         return
 
     h, w = frame.shape[:2]
@@ -93,16 +107,31 @@ def real_time_black_spot(black_spot_size, fade_area_size):
         processed_frame = process_frame(frame, mask)
         final_frame = apply_distortion_to_frame(processed_frame, black_spot_size, fade_area_size)
 
-        # Display the processed frame
-        cv2.imshow("Processed", final_frame)
+        # Convert the frame from BGR (OpenCV) to RGB (Pygame)
+        final_frame = cv2.cvtColor(final_frame, cv2.COLOR_BGR2RGB)
+
+        # Resize the frame to match the screen resolution
+        final_frame = cv2.resize(final_frame, (screen_w, screen_h))
+
+        # Convert the frame to a Pygame surface
+        final_frame = np.rot90(final_frame)  # Rotate the frame if necessary
+        final_frame = pygame.surfarray.make_surface(final_frame)
+
+        # Display the processed frame in Pygame
+        screen.blit(final_frame, (0, 0))
+        pygame.display.flip()
 
         frame_count += 1
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # Break the loop if 'q' is pressed or Pygame window is closed
+        for event in pygame.event.get():
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
 
     cap.release()
-    cv2.destroyAllWindows()
+    pygame.quit()
 
     # Calculate and display FPS
     end_time = time.time()
