@@ -1,0 +1,138 @@
+import cv2
+import numpy as np
+from IPython.display import display, clear_output
+from PIL import Image
+import time
+
+
+def separable_gaussian_blur(image, kernel_size, sigma):
+    """Apply Gaussian blur more efficiently."""
+    return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
+
+
+def simulate_night_blindness(image):
+    """Simulate moderate night blindness for the middle stage."""
+    # Darken the image moderately
+    darkened_image = image * 0.4  # Stronger darkening
+    darkened_image = np.clip(darkened_image, 0, 255)
+    
+    # Apply a stronger blur
+    blurred_image = separable_gaussian_blur(darkened_image, 25, 8)
+    return blurred_image.astype(np.uint8)
+
+
+def detect_light_condition(frame):
+    """Detect the average brightness of the frame using the green channel."""
+    avg_brightness = np.mean(frame[:, :, 1])  # Use the green channel for brightness approximation
+    return avg_brightness
+
+
+def create_static_irregular_mask(shape, radius_scale=0.9, noise_strength=0.4, edge_fade_size=199):
+    """
+    Create a static irregular mask for tunnel vision.
+    """
+    rows, cols = shape
+    center_x, center_y = cols // 2, rows // 2
+    base_radius = int(min(center_x, center_y) * radius_scale)
+
+    # Create polar coordinates
+    y, x = np.ogrid[:rows, :cols]
+    angle = np.arctan2(y - center_y, x - center_x)
+    distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+
+    # Generate irregular radii using random perturbations
+    random_radii = base_radius * (1 + noise_strength * (np.random.rand(360) - 0.5))
+    radius_map = np.interp((np.degrees(angle) + 360) % 360, np.arange(360), random_radii)
+
+    # Create an irregular mask
+    irregular_mask = (distance_from_center < radius_map).astype(np.float32)
+
+    # Smooth the edges of the mask
+    irregular_mask = cv2.GaussianBlur(irregular_mask, (edge_fade_size, edge_fade_size), 0)
+
+    return irregular_mask
+
+
+def apply_static_tunnel_vision(image_rgb, static_mask):
+    """
+    Apply a precomputed static irregular mask to the image.
+    """
+    # Resize the mask to match the frame size
+    resized_mask = cv2.resize(static_mask, (image_rgb.shape[1], image_rgb.shape[0]))
+
+    # Apply the resized mask to the image
+    vision_image = np.copy(image_rgb).astype(np.float32)
+    for i in range(3):
+        vision_image[:, :, i] *= resized_mask
+
+    return vision_image.astype(np.uint8)
+
+
+def display_frame_in_notebook(frame):
+    """Display a frame inline in Jupyter Notebook."""
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB for PIL
+    pil_image = Image.fromarray(frame_rgb)
+    clear_output(wait=True)  # Clear the previous output
+    display(pil_image)
+
+
+def simulate_light_and_dark_conditions():
+    # Open the webcam
+    cap = cv2.VideoCapture(1)  # Use 0 for the default webcam
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+
+    print("Press 'Kernel Interrupt' to stop the display.")
+
+    # Generate the static mask once based on the first frame's dimensions
+    ret, sample_frame = cap.read()
+    if not ret:
+        print("Failed to capture frame for mask creation.")
+        cap.release()
+        return
+
+    # Precompute the irregular mask and resize it
+    static_mask = create_static_irregular_mask(sample_frame.shape[:2], radius_scale=0.9, noise_strength=0.7)
+    static_mask_resized = cv2.resize(static_mask, (sample_frame.shape[1], sample_frame.shape[0]))
+
+    try:
+        while True:
+            start_time = time.time()
+
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to capture frame.")
+                break
+
+            # Resize frame proportionally for display
+            target_height = 720
+            target_width = int(frame.shape[1] * (target_height / frame.shape[0]))
+            frame_resized = cv2.resize(frame, (target_width, target_height))
+
+            # Detect brightness
+            avg_brightness = detect_light_condition(frame_resized)
+
+            # Simulate based on brightness
+            if avg_brightness < 100:  # Dark condition
+                darkened_frame = simulate_night_blindness(frame_resized)
+                adjusted_frame = apply_static_tunnel_vision(darkened_frame, static_mask_resized)
+            else:  # Light condition
+                adjusted_frame = apply_static_tunnel_vision(frame_resized, static_mask_resized)
+
+            # Display the frame inline in Jupyter Notebook
+            display_frame_in_notebook(adjusted_frame)
+
+            # Calculate FPS
+            end_time = time.time()
+            fps = 1 / (end_time - start_time)
+            print(f"FPS: {fps:.2f}")
+
+    except KeyboardInterrupt:
+        print("Exiting simulation.")
+
+    # Release resources
+    cap.release()
+
+
+simulate_light_and_dark_conditions()
