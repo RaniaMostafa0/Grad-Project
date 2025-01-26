@@ -104,6 +104,9 @@ def simulate_realtime_processing():
                 print("Failed to capture frame.")
                 break
 
+            # Flip the frame horizontally to correct the mirror effect
+            frame = cv2.flip(frame, 1)
+
             # Process frame
             processed_frame = process_frame(frame, stargardt_mask)
 
