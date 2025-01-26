@@ -1,0 +1,322 @@
+import cv2
+import numpy as np
+from scipy.interpolate import splprep, splev
+import time
+import pygame
+import sys
+
+# ================== Tunnel Vision Functions ==================
+
+def separable_gaussian_blur(image, kernel_size, sigma):
+    """Apply Gaussian blur more efficiently."""
+    return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
+
+def simulate_night_blindness(image):
+    """Simulate moderate night blindness for the middle stage."""
+    darkened_image = image * 0.4
+    darkened_image = np.clip(darkened_image, 0, 255)
+    blurred_image = separable_gaussian_blur(darkened_image, 25, 8)
+    return blurred_image.astype(np.uint8)
+
+def detect_light_condition(frame):
+    """Detect the average brightness of the frame using the green channel."""
+    return np.mean(frame[:, :, 1])
+
+def create_static_irregular_mask(shape, radius_scale=0.9, noise_strength=0.7, edge_fade_size=199, seed=42):
+    """Create a static irregular mask for tunnel vision."""
+    np.random.seed(seed)  # Ensure mask is static across frames
+    rows, cols = shape
+    center_x, center_y = cols // 2, rows // 2
+    base_radius = int(min(center_x, center_y) * radius_scale)
+
+    y, x = np.ogrid[:rows, :cols]
+    angle = np.arctan2(y - center_y, x - center_x)
+    distance_from_center = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+
+    random_radii = base_radius * (1 + noise_strength * (np.random.rand(360) - 0.5))
+    radius_map = np.interp((np.degrees(angle) + 360) % 360, np.arange(360), random_radii)
+
+    irregular_mask = (distance_from_center < radius_map).astype(np.float32)
+    irregular_mask = cv2.GaussianBlur(irregular_mask, (edge_fade_size, edge_fade_size), 0)
+
+    return irregular_mask
+
+def apply_static_tunnel_vision(image_rgb, static_mask):
+    """Apply a precomputed static irregular mask to the image."""
+    # Since mask and image size are fixed, no need to resize per frame
+    vision_image = image_rgb.astype(np.float32)
+    vision_image *= static_mask[:, :, np.newaxis]  # Vectorized multiplication
+    vision_image = np.clip(vision_image, 0, 255)
+    return vision_image.astype(np.uint8)
+
+# ================== Irregular Shapes Functions ==================
+
+def create_irregular_shape(center, width, height, num_points=40, irregularity=2.0, spline_degree=3, smoothing_factor=50, seed=None):
+    """
+    Generates an irregular, non-circular shape with fixed width and height using deterministic points and spline interpolation.
+    """
+    if seed is not None:
+        rng = np.random.RandomState(seed)
+    else:
+        rng = np.random
+
+    # Generate evenly spaced angles around the ellipse and add controlled randomness
+    angles = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
+    angles += rng.uniform(-irregularity, irregularity, size=num_points)
+
+    # Generate radii based on fixed width and height with controlled variation for organic extensions
+    radii_x = width / 2
+    radii_y = height / 2
+
+    # Calculate (x, y) points with elliptical scaling and controlled randomness
+    x = center[0] + radii_x * np.cos(angles) * rng.uniform(0.8, 1.2, size=num_points)
+    y = center[1] + radii_y * np.sin(angles) * rng.uniform(0.8, 1.2, size=num_points)
+    points = np.vstack((x, y)).T
+
+    # Sort points by angle to ensure a coherent polygon
+    centroid = np.mean(points, axis=0)
+    angles_sorted = np.arctan2(points[:,1] - centroid[1], points[:,0] - centroid[0])
+    sorted_indices = np.argsort(angles_sorted)
+    points = points[sorted_indices]
+
+    # Spline interpolation for smoother, more complex curves
+    try:
+        tck, _ = splprep([points[:,0], points[:,1]], s=smoothing_factor, per=True, k=spline_degree)
+        u_fine = np.linspace(0, 1, 400)  # Increased number of points for finer curves
+        x_fine, y_fine = splev(u_fine, tck)
+        smooth_points = np.vstack((x_fine, y_fine)).T.astype(np.int32)
+    except Exception as e:
+        print(f"Error in spline interpolation: {e}")
+        smooth_points = points.astype(np.int32)
+
+    return smooth_points
+
+def smoothing_factor_adjust(irregularity):
+    """
+    Adjusts the smoothing factor based on the level of irregularity.
+    """
+    # Simple heuristic: higher irregularity may require higher smoothing to maintain smooth shapes
+    return max(10, 75 - (irregularity * 5))  # Ensure smoothing factor is positive
+
+def create_irregular_shapes_mask(shape, shape_color=(0, 0, 0), num_shapes=3, 
+                                width=400, height=100, placement_radius=170, irregularity=2.0):
+    """
+    Creates a static mask with exactly three irregular, centrally located shapes.
+    """
+    height_img, width_img = shape
+    image_center = (width_img // 2, height_img // 2)
+
+    # Define fixed angles for deterministic placement (0°, 120°, 240°)
+    angles_deg = [0, 120, 240]
+    angles_rad = [np.deg2rad(angle) for angle in angles_deg]
+
+    # Create a mask for irregular shapes
+    mask = np.zeros((height_img, width_img), dtype=np.uint8)
+
+    for i, angle in enumerate(angles_rad):
+        # Calculate the center position for each shape based on angle and placement radius
+        center_x = int(image_center[0] + placement_radius * np.cos(angle))
+        center_y = int(image_center[1] + placement_radius * np.sin(angle))
+        new_center = (center_x, center_y)
+
+        # Assign a fixed seed for each shape to ensure deterministic irregularity
+        seed = i  # Shape 0: seed=0, Shape 1: seed=1, Shape 2: seed=2
+
+        # Generate irregular shape with fixed width and height
+        shape_points = create_irregular_shape(
+            center=new_center,
+            width=width,          # Fixed width of 400 pixels
+            height=height,        # Fixed height of 100 pixels
+            num_points=30,        # Increased number of points for more organic extensions
+            irregularity=irregularity,  # Increased irregularity for more pronounced variations
+            spline_degree=3,      # Cubic spline for smoothness
+            smoothing_factor=smoothing_factor_adjust(irregularity),  # Adjust smoothing based on irregularity
+            seed=seed             # Fixed seed for deterministic randomness
+        )
+
+        # Draw the shape on the mask
+        cv2.fillPoly(mask, [shape_points], 255)
+
+    # Smooth the mask edges for better blending
+    mask = cv2.GaussianBlur(mask, (51, 51), 0)
+    mask = cv2.medianBlur(mask, 15)
+
+    return mask
+
+def apply_irregular_shapes(tunnel_vision_image, shapes_mask, opacity=0.7):
+    """Blend the precomputed irregular shapes mask with the tunnel vision image."""
+    # Ensure masks are float32 for blending
+    tunnel_float = tunnel_vision_image.astype(np.float32)
+    shapes_float = shapes_mask.astype(np.float32) / 255.0
+    
+    # Expand dimensions to match (720,1280,3)
+    shapes_float = shapes_float[:, :, np.newaxis]  # Shape becomes (720, 1280, 1)
+
+    # Create an overlay with the desired shape color (black)
+    overlay = np.zeros_like(tunnel_float)
+
+    # Blend the overlay with the original image using the mask and opacity
+    blended = tunnel_float * (1 - shapes_float * opacity) + overlay * (shapes_float * opacity)
+    blended = np.clip(blended, 0, 255).astype(np.uint8)
+
+    return blended
+
+# ================== Image Processing ==================
+
+def resize_image(image, desired_width=1280, desired_height=720):
+    """
+    Resizes the image to the desired dimensions.
+    """
+    resized_image = cv2.resize(image, (desired_width, desired_height), interpolation=cv2.INTER_AREA)
+    return resized_image
+
+# ================== Pygame Display and FPS Calculation ==================
+
+def main():
+    # Initialize webcam capture (0 is usually the default camera)
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: Could not open webcam.")
+        return
+
+    # Set desired frame width and height
+    desired_width = 1280
+    desired_height = 720
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, desired_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, desired_height)
+
+    # Allow the camera to warm up
+    time.sleep(2.0)
+
+    # Capture a single frame to get frame dimensions
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Could not read frame from webcam.")
+        cap.release()
+        return
+
+    # Resize the frame if necessary
+    frame = resize_image(frame, desired_width, desired_height)
+
+    # ================== Precompute Static Masks ==================
+    static_mask = create_static_irregular_mask(
+        frame.shape[:2],
+        radius_scale=0.9,
+        noise_strength=0.7,
+        edge_fade_size=199,
+        seed=42  # Fixed seed to keep the mask static
+    )
+
+    shapes_mask = create_irregular_shapes_mask(
+        frame.shape[:2],
+        shape_color=(0, 0, 0),
+        num_shapes=3,
+        width=350,         # Fixed width of shapes
+        height=130,        # Fixed height of shapes
+        placement_radius=170,
+        irregularity=1.5
+    )
+
+    # ================== Apply Static Masks Once ==================
+    # Convert masks to float32 outside the loop for efficiency
+    static_mask_float = static_mask.astype(np.float32)
+    shapes_mask_float = shapes_mask.astype(np.float32) / 255.0  # Normalize to [0,1]
+
+    # ================== Initialize Pygame ==================
+    pygame.init()
+    pygame.display.set_caption("Real-Time Tunnel Vision with Black Shapes")
+
+    # Set up the display in full screen with 1280x720 resolution
+    screen = pygame.display.set_mode((desired_width, desired_height), pygame.FULLSCREEN)
+
+    # Initialize font for FPS display
+    pygame.font.init()
+    font = pygame.font.SysFont("Arial", 24)
+
+    # Create a clock object to manage FPS
+    clock = pygame.time.Clock()
+
+    # ================== Real-Time Processing Loop ==================
+    print("Starting real-time processing. Press 'ESC' to exit.")
+    
+    # Variables for FPS calculation optimization
+    fps_display_interval = 1  # seconds
+    fps_timer = time.time()
+    fps_count = 0
+    fps = 0
+
+    running = True
+    while running:
+        # Handle Pygame events
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            # Exit on pressing ESC
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+
+        # Capture frame-by-frame
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Could not read frame from webcam.")
+            break
+
+        # Resize the frame to desired dimensions
+        frame = resize_image(frame, desired_width, desired_height)
+
+        # Start timing before processing
+        start_time = time.time()
+
+        # ================== Apply Tunnel Vision ==================
+        # Apply night blindness simulation (optional)
+        # Uncomment the following line if you want to apply night blindness
+        # frame = simulate_night_blindness(frame)
+
+        tunnel_vision_image = apply_static_tunnel_vision(frame, static_mask_float)
+
+        # ================== Apply Irregular Black Shapes ==================
+        processed_image = apply_irregular_shapes(tunnel_vision_image, shapes_mask, opacity=0.7)
+
+        # End timing after processing
+        end_time = time.time()
+
+        # Calculate elapsed time
+        elapsed_time = end_time - start_time
+
+        # Update FPS every fps_display_interval seconds
+        fps_count += 1
+        if (end_time - fps_timer) > fps_display_interval:
+            fps = fps_count / (end_time - fps_timer)
+            fps_timer = end_time
+            fps_count = 0
+
+        # ================== Convert to Pygame Surface ==================
+        # Convert BGR (OpenCV) to RGB
+        processed_image_rgb = cv2.cvtColor(processed_image, cv2.COLOR_BGR2RGB)
+        # Convert to Pygame surface (swap axes for correct orientation)
+        frame_surface = pygame.surfarray.make_surface(np.rot90(processed_image_rgb))
+
+        # ================== Render to Pygame Window ==================
+        screen.blit(frame_surface, (0, 0))
+
+        # Render FPS (only update once per interval)
+        fps_text = font.render(f"FPS: {fps:.2f}", True, (255, 255, 255))
+        screen.blit(fps_text, (10, desired_height - 30))  # Position at bottom-left
+
+        # Update the display
+        pygame.display.flip()
+
+        # Increment FPS counter
+        fps_count += 1
+
+        # Cap the frame rate at 60 FPS (will adapt automatically)
+        clock.tick(60)
+
+    # Release resources
+    cap.release()
+    pygame.quit()
+    sys.exit()
+
+if __name__ == "__main__":
+    main()
