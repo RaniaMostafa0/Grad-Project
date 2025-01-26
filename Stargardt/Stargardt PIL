@@ -5,43 +5,33 @@ from IPython.display import display, clear_output
 from PIL import Image
 from threading import Thread, Lock
 from queue import Queue
-
-
 def apply_glare(image, mask, glare_intensity=150.0):
     """
     Apply glare effect by blending the original image with the mask.
     """
     return cv2.addWeighted(image, 1, mask, glare_intensity / 255.0, 0)
-
-
 def separable_gaussian_blur(image, kernel_size, sigma):
     """
     Applies separable Gaussian blur to the input image.
     """
     gaussian_1d = cv2.getGaussianKernel(kernel_size, sigma)
     return cv2.sepFilter2D(image, -1, gaussian_1d, gaussian_1d.T)
-
-
 def create_stargardt_mask(shape):
     """
     Create a Stargardt mask with organic extensions and smooth fading.
     """
     rows, cols = shape
     center_x, center_y = cols // 2, rows // 2
-
     y, x = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
     distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
-
     # Define base radii for black and fading regions
     inner_radius = 80
     outer_radius = 130
-
     # Generate a base mask with a radial gradient
     mask = np.zeros_like(distance, dtype=np.float32)
     mask[distance <= inner_radius] = 1  # Fully black inside the inner radius
     fading_region = (distance > inner_radius) & (distance <= outer_radius)
     mask[fading_region] = 1 - (distance[fading_region] - inner_radius) / (outer_radius - inner_radius)
-
     # Add random extensions around the edges
     num_extensions = 120  # Number of random extensions
     max_extension_length = 45  # Maximum extension length
@@ -49,29 +39,21 @@ def create_stargardt_mask(shape):
         # Random angle and distance for each extension
         angle = np.random.uniform(0, 2 * np.pi)
         extension_length = np.random.uniform(inner_radius, inner_radius + max_extension_length)
-
         # Determine the endpoint of the extension
         extension_x = int(center_x + extension_length * np.cos(angle))
         extension_y = int(center_y + extension_length * np.sin(angle))
-
         # Create a line or blob at the random extension point
         cv2.circle(mask, (extension_x, extension_y), radius=10, color=1, thickness=-1)
-
     # Smooth the mask to blend the extensions with the main region
     smoothed_mask = separable_gaussian_blur(mask, kernel_size=61, sigma=30)
-
     # Add pixelation using slicing for better performance
     block_size = 10
     pixelated_mask = smoothed_mask.copy()
     pixelated_mask = cv2.resize(pixelated_mask, (cols // block_size, rows // block_size), interpolation=cv2.INTER_AREA)
     pixelated_mask = cv2.resize(pixelated_mask, (cols, rows), interpolation=cv2.INTER_NEAREST)
-
     # Final smoothing for natural blending
     final_mask = separable_gaussian_blur(pixelated_mask, kernel_size=51, sigma=20)
-
     return final_mask
-
-
 def process_frame(frame, stargardt_mask):
     """
     Applies glare and Stargardt simulation on a single frame using a static Stargardt mask.
@@ -80,43 +62,31 @@ def process_frame(frame, stargardt_mask):
     gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     _, bright_areas = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY)
     bright_mask = cv2.merge([bright_areas, bright_areas, bright_areas])
-
     # Apply glare effect
     glare_image = apply_glare(frame, bright_mask)
     final_image_with_glare = cv2.addWeighted(frame, 1, glare_image, 0.4, 0)
-
     # Apply Stargardt mask (reuse precomputed mask)
     faded_spot = (final_image_with_glare * (1 - stargardt_mask[..., np.newaxis])).astype(np.uint8)
-
     return faded_spot
-
-
 def display_frame_in_notebook(frame, max_width=1280, max_height=720):
     """
     Display a frame inline in Jupyter Notebook, resized proportionally to fit within a specified size.
     """
     # Get the original dimensions
     height, width = frame.shape[:2]
-
     # Calculate the scaling factor to maintain aspect ratio
     scale = min(max_width / width, max_height / height)
-
     # Calculate the new dimensions
     new_width = int(width * scale)
     new_height = int(height * scale)
-
     # Resize the frame proportionally
     resized_frame = cv2.resize(frame, (new_width, new_height))
-
     # Convert from BGR to RGB for display
     frame_rgb = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(frame_rgb)
-
     # Display the image in the notebook
     clear_output(wait=True)
     display(pil_image)
-
-
 def simulate_realtime_processing():
     """
     Captures frames from a webcam, applies glare and Stargardt simulation, and displays the output in real-time in a Jupyter Notebook.
@@ -125,46 +95,33 @@ def simulate_realtime_processing():
     if not cap.isOpened():
         print("Failed to open webcam.")
         return
-
     print("Press 'Kernel Interrupt' to stop the simulation.")
-
     # Generate the Stargardt mask once (precompute)
     ret, sample_frame = cap.read()
     if not ret:
         print("Failed to capture frame for mask creation.")
         cap.release()
         return
-
     stargardt_mask = create_stargardt_mask(sample_frame.shape[:2])
-
     try:
         while True:
             start_time = time.time()
-
             ret, frame = cap.read()
             if not ret:
                 print("Failed to capture frame.")
                 break
-
             # Process frame
             processed_frame = process_frame(frame, stargardt_mask)
-
             # Display the processed frame
             display_frame_in_notebook(processed_frame)
-
             # Calculate and display FPS
             elapsed_time = time.time() - start_time
             fps = 1 / elapsed_time
             print(f"FPS: {fps:.2f}")  # Print FPS to the console
-
             # Maintain 25 FPS
             sleep_time = max(0, (1 / 25) - elapsed_time)
             time.sleep(sleep_time)
-
     except KeyboardInterrupt:
         print("\nExiting simulation.")
-
     cap.release()
-
-
 simulate_realtime_processing()
