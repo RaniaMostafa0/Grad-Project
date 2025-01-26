@@ -172,20 +172,24 @@ def main():
 
         # Resize the frame to desired dimensions
         frame = resize_image(frame, desired_width, desired_height)
+        
+        # ================== Mirror the Frame Horizontally ==================
+        # Flip the frame horizontally to mirror the image
+        mirrored_frame = cv2.flip(frame, 1)  # 1 denotes horizontal flipping
 
         # Start timing before processing
         start_time = time.time()
 
         # ================== Detect Brightness and Apply Effects ==================
-        avg_brightness = detect_light_condition(frame)
+        avg_brightness = detect_light_condition(mirrored_frame)
 
         if avg_brightness < 100:  # Dark condition (simulating low light or night blindness)
             print("In darkness, simulating night blindness.")
-            adjusted_frame = simulate_night_blindness(frame, adjustment_level)
+            adjusted_frame = simulate_night_blindness(mirrored_frame, adjustment_level)
             adjustment_level = min(1.0, adjustment_level + 0.005)  # Slowly increase the adjustment level over time
         else:  # Bright environment, show normal vision
             print("In light, normal vision.")
-            adjusted_frame = frame  # No adjustment needed
+            adjusted_frame = mirrored_frame  # No adjustment needed
             adjustment_level = max(0.2, adjustment_level - 0.005)  # Slowly decrease the adjustment level over time
 
         # ================== End Timing After Processing ==================
