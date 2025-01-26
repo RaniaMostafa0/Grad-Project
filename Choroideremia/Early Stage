@@ -1,0 +1,234 @@
+import cv2
+import numpy as np
+import time
+import pygame
+import sys
+
+# ================== Night Blindness Functions ==================
+
+def separable_gaussian_blur(image, kernel_size, sigma):
+    """
+    Apply Gaussian blur more efficiently using separable filters.
+    """
+    return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
+
+def simulate_night_blindness(image, adjustment_level):
+    """
+    Simulate night blindness by darkening and blurring the image.
+    
+    Parameters:
+    - image: Input image in BGR format.
+    - adjustment_level: Float between 0 and 1 indicating the darkening level.
+    
+    Returns:
+    - Blurred and darkened image in uint8 format.
+    """
+    # Darken the image based on the adjustment level
+    darkened_image = image * adjustment_level
+    darkened_image = np.clip(darkened_image, 0, 255)
+    
+    # Apply a blur to simulate difficulty seeing clearly in the dark
+    blurred_image = separable_gaussian_blur(darkened_image, 31, 10)  # Larger blur kernel for a significant blur effect
+    
+    return blurred_image.astype(np.uint8)
+
+def detect_light_condition(frame):
+    """
+    Detect the average brightness of the frame to simulate light condition (bright or dark).
+    
+    Parameters:
+    - frame: Input image in BGR format.
+    
+    Returns:
+    - Float representing the average brightness.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    avg_brightness = np.mean(gray)
+    
+    return avg_brightness
+
+# ================== Image Processing ==================
+
+def resize_image(image, desired_width=1280, desired_height=720):
+    """
+    Resizes the image to the desired dimensions.
+    
+    Parameters:
+    - image: Input image.
+    - desired_width: Target width in pixels.
+    - desired_height: Target height in pixels.
+    
+    Returns:
+    - Resized image.
+    """
+    resized_image = cv2.resize(image, (desired_width, desired_height), interpolation=cv2.INTER_AREA)
+    return resized_image
+
+# ================== Pygame Display and FPS Calculation ==================
+
+def test_webcam_indices(max_index=4):
+    """
+    Test and return available webcam indices.
+    
+    Parameters:
+    - max_index: Maximum webcam index to test.
+    
+    Returns:
+    - List of available webcam indices.
+    """
+    available_cams = []
+    for i in range(max_index):
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened():
+            print(f"Webcam found at index {i}")
+            available_cams.append(i)
+            cap.release()
+        else:
+            print(f"No webcam found at index {i}")
+    return available_cams
+
+def main():
+    # ================== Check Available Webcams ==================
+    print("Checking available webcams...")
+    available_cameras = test_webcam_indices()
+    if not available_cameras:
+        print("No webcams detected. Please check your connections and try again.")
+        return
+    else:
+        print(f"Available webcam indices: {available_cameras}")
+    
+    # Select the first available webcam (you can modify this as needed)
+    webcam_index = available_cameras[0]
+    print(f"Using webcam at index {webcam_index}")
+    
+    # Initialize webcam capture
+    cap = cv2.VideoCapture(webcam_index)
+    if not cap.isOpened():
+        print(f"Failed to open webcam at index {webcam_index}.")
+        return
+
+    # Set desired frame width and height
+    desired_width = 1280
+    desired_height = 720
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, desired_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, desired_height)
+
+    # Allow the camera to warm up
+    time.sleep(2.0)
+
+    # Capture a single frame to get frame dimensions
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to capture frame for mask creation.")
+        cap.release()
+        return
+
+    # Resize the frame if necessary
+    frame = resize_image(frame, desired_width, desired_height)
+
+    # ================== Initialize Pygame ==================
+    print("Initializing Pygame...")
+    pygame.init()
+    pygame.display.set_caption("Real-Time Night Blindness Simulation")
+    
+    # Set up the display in full screen with 1280x720 resolution
+    screen = pygame.display.set_mode((desired_width, desired_height), pygame.FULLSCREEN)
+    
+    # Initialize font for FPS display
+    pygame.font.init()
+    font = pygame.font.SysFont("Arial", 24)
+    
+    # Create a clock object to manage FPS
+    clock = pygame.time.Clock()
+    
+    # ================== Real-Time Processing Loop ==================
+    print("Starting real-time processing. Press 'ESC' to exit.")
+    
+    # Variables for FPS calculation optimization
+    fps_display_interval = 1  # seconds
+    fps_timer = time.time()
+    fps_count = 0
+    fps = 0
+    
+    # Adjustment level for night blindness simulation
+    adjustment_level = 0.2  # Start with a dark level for night blindness
+    
+    running = True
+    while running:
+        # Handle Pygame events
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            # Exit on pressing ESC
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+
+        # Capture frame-by-frame
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to capture frame.")
+            break
+
+        # Resize the frame to desired dimensions
+        frame = resize_image(frame, desired_width, desired_height)
+
+        # Start timing before processing
+        start_time = time.time()
+
+        # ================== Detect Brightness and Apply Effects ==================
+        avg_brightness = detect_light_condition(frame)
+
+        if avg_brightness < 100:  # Dark condition (simulating low light or night blindness)
+            print("In darkness, simulating night blindness.")
+            adjusted_frame = simulate_night_blindness(frame, adjustment_level)
+            adjustment_level = min(1.0, adjustment_level + 0.005)  # Slowly increase the adjustment level over time
+        else:  # Bright environment, show normal vision
+            print("In light, normal vision.")
+            adjusted_frame = frame  # No adjustment needed
+            adjustment_level = max(0.2, adjustment_level - 0.005)  # Slowly decrease the adjustment level over time
+
+        # ================== End Timing After Processing ==================
+        end_time = time.time()
+
+        # Calculate elapsed time
+        elapsed_time = end_time - start_time
+
+        # Update FPS every fps_display_interval seconds
+        fps_count += 1
+        if (end_time - fps_timer) > fps_display_interval:
+            fps = fps_count / (end_time - fps_timer)
+            fps_timer = end_time
+            fps_count = 0
+
+        # ================== Convert to Pygame Surface ==================
+        # Convert BGR (OpenCV) to RGB
+        adjusted_image_rgb = cv2.cvtColor(adjusted_frame, cv2.COLOR_BGR2RGB)
+        # Rotate the image for correct orientation in Pygame
+        adjusted_image_rgb = np.rot90(adjusted_image_rgb)
+        # Convert to Pygame surface
+        frame_surface = pygame.surfarray.make_surface(adjusted_image_rgb)
+
+        # ================== Render to Pygame Window ==================
+        screen.blit(frame_surface, (0, 0))
+
+        # Render FPS (only update once per interval)
+        fps_text = font.render(f"FPS: {fps:.2f}", True, (255, 255, 255))
+        screen.blit(fps_text, (10, desired_height - 30))  # Position at bottom-left
+
+        # Update the display
+        pygame.display.flip()
+
+        # Increment FPS counter
+        fps_count += 1
+
+        # Cap the frame rate at 60 FPS (will adapt automatically)
+        clock.tick(60)
+
+    # Release resources
+    cap.release()
+    pygame.quit()
+    sys.exit()
+
+if __name__ == "__main__":
+    main()
