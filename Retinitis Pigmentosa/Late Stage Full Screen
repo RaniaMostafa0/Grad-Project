@@ -59,6 +59,10 @@ def simulate_light_and_dark_conditions():
         print("Failed to open webcam.")
         return
 
+    # Set webcam resolution to 720p
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
     # Generate static mask
     ret, sample_frame = cap.read()
     if not ret:
@@ -80,7 +84,7 @@ def simulate_light_and_dark_conditions():
 
             # Process at 720p resolution
             target_height = 720
-            target_width = int(frame.shape[1] * (target_height / frame.shape[0]))
+            target_width = 1280  # Set target width to 1280 for 720p resolution
             frame_resized = cv2.resize(frame, (target_width, target_height))
 
             # Apply effects
@@ -93,11 +97,25 @@ def simulate_light_and_dark_conditions():
 
             # Convert for Pygame display
             rgb_frame = cv2.cvtColor(adjusted_frame, cv2.COLOR_BGR2RGB)
-            fullscreen_frame = cv2.resize(rgb_frame, (screen_w, screen_h))
-            
+
+            # Maintain aspect ratio while resizing
+            aspect_ratio = target_width / target_height
+            new_height = int(screen_w / aspect_ratio)
+            if new_height > screen_h:
+                new_height = screen_h
+                new_width = int(screen_h * aspect_ratio)
+            else:
+                new_width = screen_w
+
+            resized_frame = cv2.resize(rgb_frame, (new_width, new_height))
+
+            # Center the frame on the screen
+            x_offset = (screen_w - new_width) // 2
+            y_offset = (screen_h - new_height) // 2
+
             # Display in Pygame
-            pygame_frame = pygame.surfarray.make_surface(np.rot90(fullscreen_frame))
-            screen.blit(pygame_frame, (0, 0))
+            pygame_frame = pygame.surfarray.make_surface(np.rot90(resized_frame))
+            screen.blit(pygame_frame, (x_offset, y_offset))
             pygame.display.flip()
 
             # Handle exit
