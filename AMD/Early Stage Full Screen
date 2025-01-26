@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 import time
+import pygame
+from pygame.locals import *
 
 # Enable GPU acceleration in OpenCV
 cv2.setUseOptimized(True)
@@ -11,7 +13,6 @@ def apply_realistic_macular_pucker_effect(image):
     center_x, center_y = w // 2, h // 2
 
     # Step 1: Create Gradual Blurring Mask
-    # Optimization: Precompute grid indices efficiently
     y_indices, x_indices = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
     distance_from_center = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
 
@@ -21,12 +22,10 @@ def apply_realistic_macular_pucker_effect(image):
     blur_mask = cv2.normalize(blur_mask, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
 
     # Step 2: Apply Separable Gaussian Blur
-    # Optimization: Use precomputed kernel sizes for performance
     gaussian_kernel = cv2.getGaussianKernel(31, 0)
     heavy_blur = cv2.sepFilter2D(image, -1, gaussian_kernel, gaussian_kernel)
 
     # Step 3: Blend with Gradual Mask
-    # Optimization: Avoid converting blur_mask to uint8 unnecessarily
     blur_mask_3d = cv2.merge([blur_mask] * 3)
     blurred_part = cv2.multiply(heavy_blur.astype(np.float32), blur_mask_3d)
     original_part = cv2.multiply(image.astype(np.float32), 1 - blur_mask_3d)
@@ -35,6 +34,16 @@ def apply_realistic_macular_pucker_effect(image):
     return final_img
 
 def main():
+    # Initialize Pygame
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
+    pygame.display.set_caption('Macular Pucker Effect')
+
+    # Get screen dimensions
+    screen_info = pygame.display.Info()
+    screen_w = screen_info.current_w
+    screen_h = screen_info.current_h
+
     # Open webcam
     cap = cv2.VideoCapture(0)
 
@@ -58,14 +67,28 @@ def main():
         # Apply the macular pucker effect
         processed_frame = apply_realistic_macular_pucker_effect(frame)
 
-        # Display the processed frame
-        cv2.imshow('Macular Pucker Effect', processed_frame)
+        # Convert the frame from BGR (OpenCV) to RGB (Pygame)
+        processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+
+        # Resize the frame to match the screen resolution
+        processed_frame = cv2.resize(processed_frame, (screen_w, screen_h))
+
+        # Convert the frame to a Pygame surface
+        processed_frame = np.rot90(processed_frame)  # Rotate the frame if necessary
+        processed_frame = pygame.surfarray.make_surface(processed_frame)
+
+        # Display the processed frame in Pygame
+        screen.blit(processed_frame, (0, 0))
+        pygame.display.flip()
 
         frame_count += 1
 
-        # Break the loop if 'q' is pressed
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # Break the loop if 'q' is pressed or Pygame window is closed
+        for event in pygame.event.get():
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
 
     # Calculate and display FPS
     end_time = time.time()
@@ -75,7 +98,7 @@ def main():
 
     # Release resources
     cap.release()
-    cv2.destroyAllWindows()
+    pygame.quit()
 
 if __name__ == "__main__":
     main()
