@@ -137,7 +137,7 @@ def create_irregular_shapes_mask(shape, shape_color=(0, 0, 0), num_shapes=3,
 
     return mask
 
-def apply_irregular_shapes(tunnel_vision_image, shapes_mask, opacity=0.7):
+def apply_irregular_shapes(tunnel_vision_image, shapes_mask, opacity=0.8):
     """Blend the precomputed irregular shapes mask with the tunnel vision image."""
     tunnel_float = tunnel_vision_image.astype(np.float32)
     shapes_float = shapes_mask.astype(np.float32) / 255.0
@@ -248,7 +248,7 @@ def main():
         tunnel_vision_image = apply_static_tunnel_vision(mirrored_frame, static_mask_float)
 
         # Apply irregular black shapes
-        processed_image = apply_irregular_shapes(tunnel_vision_image, shapes_mask, opacity=0.7)
+        processed_image = apply_irregular_shapes(tunnel_vision_image, shapes_mask, opacity=0.8)
 
         end_time = time.time()
         elapsed_time = end_time - start_time
