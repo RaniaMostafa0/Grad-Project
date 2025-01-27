@@ -96,6 +96,7 @@ def real_time_black_spot(black_spot_size, fade_area_size):
     mask[fade_zone] = (distances[fade_zone] - black_spot_size) / fade_area_size
     mask = generate_static_organic_extensions(mask, h, w)
 
+    # FPS Calculation Variables
     frame_count = 0
     start_time = time.time()
 
@@ -104,6 +105,7 @@ def real_time_black_spot(black_spot_size, fade_area_size):
         if not ret:
             break
 
+        # Apply processing and distortion
         processed_frame = process_frame(frame, mask)
         final_frame = apply_distortion_to_frame(processed_frame, black_spot_size, fade_area_size)
 
@@ -121,6 +123,7 @@ def real_time_black_spot(black_spot_size, fade_area_size):
         screen.blit(final_frame, (0, 0))
         pygame.display.flip()
 
+        # Increment frame count
         frame_count += 1
 
         # Break the loop if 'q' is pressed or Pygame window is closed
@@ -128,16 +131,15 @@ def real_time_black_spot(black_spot_size, fade_area_size):
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                 cap.release()
                 pygame.quit()
+                # Calculate FPS
+                end_time = time.time()
+                total_time = end_time - start_time
+                fps = frame_count / total_time if total_time > 0 else 0
+                print(f"Processed {frame_count} frames in {total_time:.2f} seconds. Overall FPS: {fps:.2f}")
                 return
 
     cap.release()
     pygame.quit()
-
-    # Calculate and display FPS
-    end_time = time.time()
-    total_time = end_time - start_time
-    fps = frame_count / total_time
-    print(f"Processed {frame_count} frames in {total_time:.2f} seconds. Overall FPS: {fps:.2f}")
 
 def main():
     black_spot_size = 5
