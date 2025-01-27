@@ -8,76 +8,26 @@ from queue import Queue
 
 
 def precompute_blur_mask(shape, downscale_factor=0.5, x_offset=20, y_offset=10):
-    """
-    Precompute a static Gaussian blur mask with downscaling and shifted center.
-    
-    Parameters:
-    - shape: Tuple of (height, width, channels) of the image.
-    - downscale_factor: Factor by which to downscale the image for mask computation.
-    - x_offset: Horizontal offset for the center of the blur.
-    - y_offset: Vertical offset for the center of the blur.
-    
-    Returns:
-    - blur_mask: 2D Gaussian mask.
-    - downscale_factor: The downscale factor used.
-    """
+    """Precompute a static Gaussian blur mask with downscaling and shifted center."""
     h, w = int(shape[0] * downscale_factor), int(shape[1] * downscale_factor)
     center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
-
+    
     y, x = np.ogrid[:h, :w]
     distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
     blur_mask = np.exp(-(distance_from_center ** 2) / (2 * (w // 4) ** 2))
-
+    
     return blur_mask.astype(np.float32), downscale_factor
 
 
-def apply_realistic_combined_effect(image, blur_mask, downscale_factor, x_offset=20, y_offset=10):
-    """
-    Apply a combined macular pucker effect with central blurring and distortions.
-    
-    Parameters:
-    - image: Original BGR image.
-    - blur_mask: Precomputed Gaussian blur mask.
-    - downscale_factor: Factor by which to downscale the image for processing.
-    - x_offset: Horizontal offset for distortions.
-    - y_offset: Vertical offset for distortions.
-    
-    Returns:
-    - final_image: Processed BGR image with effects applied.
-    """
-    h, w = image.shape[:2]
-    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
-    radius = min(h, w) // 3
-
-    x, y = np.meshgrid(np.arange(w), np.arange(h))
-    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
-    mask = distance < radius
-
-    fade_factor = (radius - distance) / radius
-    fade_factor = np.clip(fade_factor, 0, 1)
-
-    amplitude_x = np.sin(2 * np.pi * (y - center_y) / h * 4) * 15
-    amplitude_y = np.cos(2 * np.pi * (x - center_x) / w * 4) * 15
-
-    distortion_x = amplitude_x * fade_factor
-    distortion_y = amplitude_y * fade_factor
-
-    map_x = (x + distortion_x).astype(np.float32)
-    map_y = (y + distortion_y).astype(np.float32)
-
-    distorted_image = cv2.remap(image, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-    distorted_image[~mask] = image[~mask]
-
-    small_image = cv2.resize(distorted_image, None, fx=downscale_factor, fy=downscale_factor)
+def apply_realistic_macular_pucker_effect(image, blur_mask, downscale_factor):
+    """Apply the central blurring effect with downscaling."""
+    small_image = cv2.resize(image, None, fx=downscale_factor, fy=downscale_factor)
     small_blurred = cv2.GaussianBlur(small_image, (31, 31), 0)
-
     mask_3d = cv2.merge([blur_mask] * 3)
     blended_small = cv2.convertScaleAbs(
         small_image * (1 - mask_3d) + small_blurred * mask_3d
     )
-    final_image = cv2.resize(blended_small, (image.shape[1], image.shape[0]))
-
-    return final_image
+    return cv2.resize(blended_small, (image.shape[1], image.shape[0]))
 
 
 def get_scaled_dimensions(original_size, target_size):
@@ -144,7 +94,7 @@ def video_processor(frame_queue, processed_queue, stop_event, blur_mask, downsca
     while not stop_event.is_set() or not frame_queue.empty():
         try:
             frame = frame_queue.get(timeout=0.05)
-            processed = apply_realistic_combined_effect(frame, blur_mask, downscale_factor)
+            processed = apply_realistic_macular_pucker_effect(frame, blur_mask, downscale_factor)
             if not processed_queue.full():
                 processed_queue.put(processed)
         except:
