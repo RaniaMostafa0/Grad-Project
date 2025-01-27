@@ -1,0 +1,168 @@
+import cv2
+import numpy as np
+import time
+import pygame
+from pygame.locals import QUIT, KEYDOWN, K_ESCAPE
+
+def process_frame(frame):
+    """
+    Process a single frame to simulate nuclear cataract symptoms.
+    
+    Steps:
+    1. Apply Gaussian Blur to simulate lens opacity.
+    2. Apply a yellow tint to simulate the yellowing of the lens.
+    3. Reduce contrast to mimic decreased visual clarity.
+    """
+    # 1. Gaussian Blur (efficient kernel size for performance)
+    kernel_size = 15
+    blurred_frame = cv2.GaussianBlur(frame, (kernel_size, 1), 5)  # Horizontal pass
+    blurred_frame = cv2.GaussianBlur(blurred_frame, (1, kernel_size), 5)  # Vertical pass
+
+    # 2. Yellow Tint
+    # Adjust the tint to reduce Blue and enhance Green and Red for a yellowish effect
+    # OpenCV uses BGR format
+    yellow_tint = np.array([0.5, 1.0, 1.0], dtype=np.float32)  # [B, G, R]
+    yellow_frame = blurred_frame.astype(np.float32) * yellow_tint
+    yellow_frame = np.clip(yellow_frame, 0, 255).astype(np.uint8)
+
+    # 3. Reduce Contrast
+    contrast_reduced_frame = cv2.convertScaleAbs(yellow_frame, alpha=0.65, beta=30)
+
+    return contrast_reduced_frame
+
+def get_scaled_dimensions(original_size, target_size):
+    """
+    Calculate the new size to maintain aspect ratio.
+    
+    Parameters:
+    - original_size: Tuple of (width, height) of the original image.
+    - target_size: Tuple of (width, height) of the target display.
+    
+    Returns:
+    - new_size: Tuple of (width, height) after scaling.
+    - position: Tuple of (x, y) position to center the image.
+    """
+    original_width, original_height = original_size
+    target_width, target_height = target_size
+
+    # Calculate scaling factor to fit the image within the target dimensions
+    scale_factor = min(target_width / original_width, target_height / original_height)
+
+    # Calculate new dimensions
+    new_width = int(original_width * scale_factor)
+    new_height = int(original_height * scale_factor)
+
+    # Calculate position to center the image
+    x_pos = (target_width - new_width) // 2
+    y_pos = (target_height - new_height) // 2
+
+    return (new_width, new_height), (x_pos, y_pos)
+
+def simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720)):
+    """
+    Simulate nuclear cataract symptoms in real-time using the webcam and display with Pygame.
+    
+    Parameters:
+    - webcam_index: Index of the webcam (default is 0).
+    - resolution: Tuple specifying the resolution (width, height).
+    """
+    # Initialize Pygame
+    pygame.init()
+    pygame.display.set_caption("Nuclear Cataract Simulation")
+
+    # Get the current display info to set full-screen mode
+    display_info = pygame.display.Info()
+    screen_width, screen_height = display_info.current_w, display_info.current_h
+    screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
+
+    # Open the webcam
+    cap = cv2.VideoCapture(webcam_index)
+
+    if not cap.isOpened():
+        print("Error: Unable to access webcam.")
+        pygame.quit()
+        return
+
+    # Optionally set the webcam resolution to match desired processing resolution
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+
+    # Track FPS
+    frame_count = 0
+    total_time = 0
+
+    print("Press 'ESC' or close the window to stop the simulation.")
+
+    clock = pygame.time.Clock()
+
+    try:
+        while True:
+            for event in pygame.event.get():
+                if event.type == QUIT:
+                    raise KeyboardInterrupt
+                if event.type == KEYDOWN:
+                    if event.key == K_ESCAPE:
+                        raise KeyboardInterrupt
+
+            ret, frame = cap.read()
+            if not ret:
+                print("Error: Unable to read frame from webcam.")
+                break
+
+            # Start timing
+            start_time = time.time()
+
+            # Process frame
+            processed_frame = process_frame(frame)
+
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+
+            # Get original frame size
+            original_size = frame_rgb.shape[1], frame_rgb.shape[0]  # (width, height)
+
+            # Calculate scaled size and position to maintain aspect ratio
+            scaled_size, position = get_scaled_dimensions(original_size, (screen_width, screen_height))
+
+            # Resize frame while maintaining aspect ratio
+            frame_resized = cv2.resize(frame_rgb, scaled_size, interpolation=cv2.INTER_AREA)
+
+            # Convert to Pygame surface
+            frame_surface = pygame.surfarray.make_surface(np.rot90(frame_resized))
+
+            # Clear the screen by filling it with black
+            screen.fill((0, 0, 0))
+
+            # Blit the frame to the screen at the calculated position
+            screen.blit(frame_surface, position)
+            pygame.display.flip()
+
+            # Calculate FPS
+            processing_time = time.time() - start_time
+            total_time += processing_time
+            frame_count += 1
+            fps = 1 / processing_time if processing_time > 0 else 0
+
+            # Optionally, you can display FPS on the window title
+            pygame.display.set_caption(f"Nuclear Cataract Simulation - FPS: {fps:.2f}")
+
+            # Limit to 60 FPS
+            clock.tick(60)
+
+    except KeyboardInterrupt:
+        print("\nExiting real-time video processing.")
+
+    finally:
+        cap.release()
+        pygame.quit()
+        if frame_count > 0:
+            average_processing_time = total_time / frame_count
+            overall_fps = frame_count / total_time
+            print(f"Total frames processed: {frame_count}")
+            print(f"Total processing time: {total_time:.4f} seconds")
+            print(f"Average processing time per frame: {average_processing_time:.4f} seconds")
+            print(f"Real-time processing FPS: {overall_fps:.2f}")
+
+# Example usage
+if __name__ == "__main__":
+    simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720))
