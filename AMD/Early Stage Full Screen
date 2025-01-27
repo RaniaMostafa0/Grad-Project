@@ -86,15 +86,13 @@ def main():
         # Break the loop if 'q' is pressed or Pygame window is closed
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                end_time = time.time()
+                total_time = end_time - start_time
+                fps = frame_count / total_time if total_time > 0 else 0
+                print(f"Processed {frame_count} frames in {total_time:.2f} seconds. Overall FPS: {fps:.2f}")
                 cap.release()
                 pygame.quit()
                 return
-
-    # Calculate and display FPS
-    end_time = time.time()
-    total_time = end_time - start_time
-    fps = frame_count / total_time
-    print(f"Processed {frame_count} frames in {total_time:.2f} seconds. Overall FPS: {fps:.2f}")
 
     # Release resources
     cap.release()
