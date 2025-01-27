@@ -1,0 +1,261 @@
+import cv2
+import numpy as np
+import time
+import pygame
+from pygame.locals import QUIT, KEYDOWN, K_ESCAPE
+from threading import Thread, Event
+from queue import Queue
+
+
+def precompute_blur_mask(shape, downscale_factor=0.5, x_offset=20, y_offset=10):
+    """Precompute a static Gaussian blur mask with downscaling and shifted center."""
+    h, w = int(shape[0] * downscale_factor), int(shape[1] * downscale_factor)
+    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
+    
+    y, x = np.ogrid[:h, :w]
+    distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    blur_mask = np.exp(-(distance_from_center ** 2) / (2 * (w // 3.5) ** 2))
+    
+    return blur_mask.astype(np.float32), downscale_factor
+
+
+def precompute_distortion_map(shape, x_offset=20, y_offset=10, sine_frequency=4, cosine_frequency=4):
+    """Precompute the distortion map for realistic macular pucker effect."""
+    h, w = shape[:2]
+    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
+    radius = min(h, w) // 2.5
+
+    x, y = np.meshgrid(np.arange(w), np.arange(h))
+    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    fade_factor = np.clip((radius - distance) / radius, 0, 1)
+
+    distortion_strength_sin, distortion_strength_cos = 1.2, 1.5
+    amplitude_x = np.sin(2 * np.pi * (y - center_y) / h * sine_frequency) * 15 * distortion_strength_sin
+    amplitude_y = np.cos(2 * np.pi * (x - center_x) / w * cosine_frequency) * 15 * distortion_strength_cos
+
+    distortion_x = amplitude_x * fade_factor
+    distortion_y = amplitude_y * fade_factor
+
+    map_x = (x + distortion_x).astype(np.float32)
+    map_y = (y + distortion_y).astype(np.float32)
+    return map_x, map_y
+
+
+def apply_realistic_combined_effect(image, map_x, map_y, blur_mask, downscale_factor):
+    """Apply the central distortion and blurring effect."""
+    distorted_image = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    small_image = cv2.resize(distorted_image, None, fx=downscale_factor, fy=downscale_factor)
+    small_blurred = cv2.GaussianBlur(small_image, (25, 25), 0)
+    small_blurred_resized = cv2.resize(small_blurred, (image.shape[1], image.shape[0]))
+    blur_mask_resized = cv2.resize(blur_mask, (image.shape[1], image.shape[0]))
+    mask_3d = cv2.merge([blur_mask_resized] * 3)
+    blended = distorted_image * (1 - mask_3d) + small_blurred_resized * mask_3d
+    return blended.astype(np.uint8)
+
+
+def get_scaled_dimensions(original_size, target_size):
+    """
+    Calculate the new size to maintain aspect ratio.
+
+    Parameters:
+    - original_size: Tuple of (width, height) of the original image.
+    - target_size: Tuple of (width, height) of the target display.
+
+    Returns:
+    - new_size: Tuple of (width, height) after scaling.
+    - position: Tuple of (x, y) position to center the image.
+    """
+    original_width, original_height = original_size
+    target_width, target_height = target_size
+
+    # Calculate scaling factor to fit the image within the target dimensions
+    scale_factor = min(target_width / original_width, target_height / original_height)
+
+    # Calculate new dimensions
+    new_width = int(original_width * scale_factor)
+    new_height = int(original_height * scale_factor)
+
+    # Calculate position to center the image
+    x_pos = (target_width - new_width) // 2
+    y_pos = (target_height - new_height) // 2
+
+    return (new_width, new_height), (x_pos, y_pos)
+
+
+def video_reader(cap, frame_queue, stop_event):
+    """
+    Reads frames from the video capture and pushes them to a queue.
+
+    Parameters:
+    - cap: OpenCV VideoCapture object.
+    - frame_queue: Queue to hold frames.
+    - stop_event: Event to signal threads to stop.
+    """
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            stop_event.set()
+            break
+        if not frame_queue.full():
+            frame_queue.put(frame)
+        else:
+            # If queue is full, skip the frame to avoid delays
+            pass
+
+
+def video_processor(frame_queue, processed_queue, stop_event, map_x, map_y, blur_mask, downscale_factor):
+    """
+    Processes frames by applying the macular pucker effect.
+
+    Parameters:
+    - frame_queue: Queue holding raw frames.
+    - processed_queue: Queue to hold processed frames.
+    - stop_event: Event to signal threads to stop.
+    - map_x: Precomputed distortion map for X-axis.
+    - map_y: Precomputed distortion map for Y-axis.
+    - blur_mask: Precomputed blur mask.
+    - downscale_factor: Factor by which frames are downscaled.
+    """
+    while not stop_event.is_set() or not frame_queue.empty():
+        try:
+            frame = frame_queue.get(timeout=0.05)
+            processed = apply_realistic_combined_effect(frame, map_x, map_y, blur_mask, downscale_factor)
+            if not processed_queue.full():
+                processed_queue.put(processed)
+        except:
+            continue  # Timeout occurred, loop back and check stop_event
+
+
+def simulate_macular_pucker_webcam(webcam_index=0, resolution=(1280, 720)):
+    """
+    Simulate macular pucker effects on webcam feed and display using Pygame.
+
+    Parameters:
+    - webcam_index: Index of the webcam (default is 0).
+    - resolution: Tuple specifying the resolution (width, height).
+    """
+    # Initialize Pygame
+    pygame.init()
+    pygame.display.set_caption('Macular Pucker Simulation')
+
+    # Get the current display info to set full-screen mode
+    display_info = pygame.display.Info()
+    screen_width, screen_height = display_info.current_w, display_info.current_h
+    screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
+
+    # Open webcam and configure
+    cap = cv2.VideoCapture(webcam_index)
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        pygame.quit()
+        return
+
+    # Set webcam resolution to 720p
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+
+    # Capture a sample frame for precomputing masks
+    ret, sample_frame = cap.read()
+    if not ret:
+        print("Failed to capture frame for mask creation.")
+        cap.release()
+        pygame.quit()
+        return
+
+    # Precompute blur mask and distortion map
+    blur_mask, downscale_factor = precompute_blur_mask(sample_frame.shape, x_offset=70, y_offset=40)
+    map_x, map_y = precompute_distortion_map(sample_frame.shape, x_offset=70, y_offset=40)
+
+    # Initialize threading components with Queues
+    frame_queue = Queue(maxsize=10)       # Holds raw frames
+    processed_queue = Queue(maxsize=10)   # Holds processed frames
+    stop_event = Event()                   # Signals threads to stop
+
+    # Start the frame reader and processor threads
+    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
+    processor_thread = Thread(target=video_processor, args=(frame_queue, processed_queue, stop_event, map_x, map_y, blur_mask, downscale_factor))
+    reader_thread.start()
+    processor_thread.start()
+
+    # Track FPS
+    frame_count = 0
+    total_processing_time = 0
+
+    print("Press 'ESC' or close the window to stop the simulation.")
+
+    clock = pygame.time.Clock()
+
+    try:
+        while True:
+            start_time = time.time()
+
+            # Handle Pygame events
+            for event in pygame.event.get():
+                if event.type == QUIT:
+                    raise KeyboardInterrupt
+                if event.type == KEYDOWN:
+                    if event.key == K_ESCAPE:
+                        raise KeyboardInterrupt
+
+            # Fetch processed frame if available
+            if not processed_queue.empty():
+                processed_frame = processed_queue.get()
+
+                # Convert BGR to RGB
+                rgb_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+
+                # Calculate scaled size and position to maintain aspect ratio
+                original_size = rgb_frame.shape[1], rgb_frame.shape[0]  # (width, height)
+                scaled_size, position = get_scaled_dimensions(original_size, (screen_width, screen_height))
+
+                # Resize frame while maintaining aspect ratio
+                frame_resized = cv2.resize(rgb_frame, scaled_size, interpolation=cv2.INTER_AREA)
+
+                # Convert to Pygame surface
+                frame_surface = pygame.surfarray.make_surface(np.rot90(frame_resized))
+
+                # Clear the screen by filling it with black
+                screen.fill((0, 0, 0))
+
+                # Blit the frame to the screen at the calculated position
+                screen.blit(frame_surface, position)
+                pygame.display.flip()
+
+                # Calculate FPS
+                processing_time = time.time() - start_time
+                total_processing_time += processing_time
+                frame_count += 1
+                fps = 1 / processing_time if processing_time > 0 else 0
+
+                # Update window caption with FPS
+                pygame.display.set_caption(f"Macular Pucker Simulation - FPS: {fps:.2f}")
+
+            # Maintain 60 FPS
+            clock.tick(60)
+
+    except KeyboardInterrupt:
+        print("\nExiting simulation.")
+
+    finally:
+        # Signal threads to stop and wait for them to finish
+        stop_event.set()
+        reader_thread.join()
+        processor_thread.join()
+
+        # Release webcam and quit Pygame
+        cap.release()
+        pygame.quit()
+
+        # Print processing statistics
+        if frame_count > 0:
+            average_processing_time = total_processing_time / frame_count
+            overall_fps = frame_count / total_processing_time
+            print(f"\nTotal frames processed: {frame_count}")
+            print(f"Total processing time: {total_processing_time:.4f} seconds")
+            print(f"Average processing time per frame: {average_processing_time:.4f} seconds")
+            print(f"Real-time processing FPS: {overall_fps:.2f}")
+
+
+# Example usage
+if __name__ == "__main__":
+    simulate_macular_pucker_webcam(webcam_index=0, resolution=(1280, 720))
