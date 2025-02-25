@@ -1,0 +1,100 @@
+import cv2
+import numpy as np
+
+scotoma_radius = 150  # Initial scotoma size
+blur_strength = 20  # Blurring effect
+color_desaturation = 0.3  # Color saturation reduction
+contrast_alpha = 0.8  # Contrast adjustment
+
+def create_disfigured_circle_mask(shape, center, base_radius=100, distortion_strength=50):
+    """
+    Create a mask with a highly disfigured (irregular) circle.
+    """
+    h, w = shape[:2]
+    y, x = np.ogrid[:h, :w]
+
+    # Create a base circular mask
+    distance_from_center = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2)
+    
+    # Add strong distortion to the circle
+    distortion = np.random.uniform(-distortion_strength, distortion_strength, (h, w))
+    distorted_distance = distance_from_center + distortion
+
+    # Create the disfigured mask
+    disfigured_mask = (distorted_distance <= base_radius).astype(np.float32)
+    disfigured_mask = cv2.GaussianBlur(disfigured_mask, (51, 51), 0)  # Smooth the edges
+
+    return disfigured_mask
+
+def apply_lhon_effect(frame, scotoma_radius, distortion_strength=50):
+    """
+    Simulate LHON symptoms:
+    - Central scotoma with a highly disfigured shape
+    - Blurred vision
+    - Color desaturation
+    - Reduced contrast sensitivity
+    """
+    h, w = frame.shape[:2]
+    center = (w // 2, h // 2)
+    
+    # Create a highly disfigured scotoma mask
+    disfigured_mask = create_disfigured_circle_mask((h, w), center, scotoma_radius, distortion_strength)
+    
+    # Apply Gaussian blur to the entire image
+    blurred_frame = cv2.GaussianBlur(frame, (0, 0), blur_strength)
+    
+    # Blend using the scotoma mask
+    disfigured_mask_3d = cv2.merge([disfigured_mask] * 3)
+    result = cv2.convertScaleAbs(frame * (1 - disfigured_mask_3d) + blurred_frame * disfigured_mask_3d)
+    
+    # Apply color desaturation
+    hsv_frame = cv2.cvtColor(result, cv2.COLOR_BGR2HSV)
+    hsv_frame[:, :, 1] = hsv_frame[:, :, 1] * (1 - disfigured_mask) + hsv_frame[:, :, 1] * disfigured_mask * color_desaturation
+    result = cv2.cvtColor(hsv_frame, cv2.COLOR_HSV2BGR)
+    
+    # Apply contrast reduction
+    result = cv2.convertScaleAbs(result, alpha=contrast_alpha, beta=0)
+    
+    return result
+
+def process_webcam_feed():
+    """
+    Capture and process the webcam feed in real-time.
+    """
+    global scotoma_radius
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: Could not access the webcam.")
+        return
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Error: Failed to capture frame.")
+                break
+
+            # Apply the LHON effect
+            output_frame = apply_lhon_effect(frame, scotoma_radius, distortion_strength=50)
+
+            # Display the result
+            cv2.imshow("LHON Simulation", output_frame)
+
+            # Adjust scotoma size with keyboard input
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('+'):
+                scotoma_radius = min(scotoma_radius + 10, 300)  # Increase
+            elif key == ord('-'):
+                scotoma_radius = max(scotoma_radius - 10, 50)  # Decrease
+            elif key == ord('q'):
+                break
+
+    except KeyboardInterrupt:
+        print("\nExiting real-time video processing.")
+
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    process_webcam_feed()
