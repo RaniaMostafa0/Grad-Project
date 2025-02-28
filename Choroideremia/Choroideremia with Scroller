@@ -1,0 +1,194 @@
+import cv2
+import numpy as np
+import time
+import pygame
+from pygame.locals import *
+from scipy.interpolate import splprep, splev
+
+# Enable GPU acceleration in OpenCV
+cv2.setUseOptimized(True)
+cv2.ocl.setUseOpenCL(True)
+
+# Scrollbar parameters
+SCROLLBAR_HEIGHT = 20
+SCROLLBAR_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+THUMB_WIDTH = 40
+
+# ================== Tunnel Vision Functions ==================
+
+def create_dynamic_irregular_mask(shape, radius_scale, noise_strength, edge_fade_size, seed=42):
+    """Create a dynamic irregular mask for tunnel vision."""
+    np.random.seed(seed)
+    rows, cols = shape
+    center_x, center_y = cols // 2, rows // 2
+    base_radius = int(min(center_x, center_y) * radius_scale)
+
+    y, x = np.ogrid[:rows, :cols]
+    angle = np.arctan2(y - center_y, x - center_x)
+    distance_from_center = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+
+    random_radii = base_radius * (1 + noise_strength * (np.random.rand(360) - 0.5))
+    radius_map = np.interp((np.degrees(angle) + 360) % 360, np.arange(360), random_radii)
+
+    irregular_mask = (distance_from_center < radius_map).astype(np.float32)
+    irregular_mask = cv2.GaussianBlur(irregular_mask, (edge_fade_size, edge_fade_size), 0)
+
+    return irregular_mask
+
+def apply_dynamic_tunnel_vision(image_rgb, static_mask, intensity):
+    """Apply a dynamic irregular mask to the image with adjustable intensity."""
+    vision_image = image_rgb.astype(np.float32)
+    vision_image *= static_mask[:, :, np.newaxis] * intensity
+    vision_image = np.clip(vision_image, 0, 255)
+    return vision_image.astype(np.uint8)
+
+# ================== Irregular Shapes Functions ==================
+
+def create_irregular_shape(center, width, height, num_points=40, irregularity=2.0, spline_degree=3, smoothing_factor=50, seed=None):
+    """
+    Generates an irregular, non-circular shape with fixed width and height using deterministic points and spline interpolation.
+    """
+    if seed is not None:
+        rng = np.random.RandomState(seed)
+    else:
+        rng = np.random
+
+    # Generate evenly spaced angles around the ellipse and add controlled randomness
+    angles = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
+    angles += rng.uniform(-irregularity, irregularity, size=num_points)
+
+    # Generate radii based on fixed width and height with controlled variation for organic extensions
+    radii_x = width / 2
+    radii_y = height / 2
+
+    # Calculate (x, y) points with elliptical scaling and controlled randomness
+    x = center[0] + radii_x * np.cos(angles) * rng.uniform(0.8, 1.2, size=num_points)
+    y = center[1] + radii_y * np.sin(angles) * rng.uniform(0.8, 1.2, size=num_points)
+    points = np.vstack((x, y)).T
+
+    # Sort points by angle to ensure a coherent polygon
+    centroid = np.mean(points, axis=0)
+    angles_sorted = np.arctan2(points[:,1] - centroid[1], points[:,0] - centroid[0])
+    sorted_indices = np.argsort(angles_sorted)
+    points = points[sorted_indices]
+
+    # Spline interpolation for smoother, more complex curves
+    try:
+        tck, _ = splprep([points[:,0], points[:,1]], s=smoothing_factor, per=True, k=spline_degree)
+        u_fine = np.linspace(0, 1, 400)  # Increased number of points for finer curves
+        x_fine, y_fine = splev(u_fine, tck)
+        smooth_points = np.vstack((x_fine, y_fine)).T.astype(np.int32)
+    except Exception as e:
+        print(f"Error in spline interpolation: {e}")
+        smooth_points = points.astype(np.int32)
+
+    return smooth_points
+
+def create_dynamic_irregular_shapes_mask(shape, shape_color=(0, 0, 0), num_shapes=3, width=400, height=100, placement_radius=170, irregularity=2.0, scale=1.0):
+    """Create a dynamic mask with irregular shapes that scale over time."""
+    height_img, width_img = shape
+    image_center = (width_img // 2, height_img // 2)
+
+    angles_deg = [0, 120, 240]
+    angles_rad = [np.deg2rad(angle) for angle in angles_deg]
+
+    mask = np.zeros((height_img, width_img), dtype=np.uint8)
+
+    for i, angle in enumerate(angles_rad):
+        center_x = int(image_center[0] + placement_radius * np.cos(angle))
+        center_y = int(image_center[1] + placement_radius * np.sin(angle))
+        new_center = (center_x, center_y)
+
+        seed = i
+        shape_points = create_irregular_shape(new_center, int(width * scale), int(height * scale), num_points=30, irregularity=irregularity, spline_degree=3, smoothing_factor=75 - (irregularity * 5), seed=seed)
+        cv2.fillPoly(mask, [shape_points], 255)
+
+    mask = cv2.GaussianBlur(mask, (51, 51), 0)
+    mask = cv2.medianBlur(mask, 15)
+    return mask
+
+def apply_dynamic_irregular_shapes(tunnel_vision_image, shapes_mask, opacity=0.7):
+    """Blend the dynamic irregular shapes mask with the tunnel vision image."""
+    tunnel_float = tunnel_vision_image.astype(np.float32)
+    shapes_float = shapes_mask.astype(np.float32) / 255.0
+    shapes_float = shapes_float[:, :, np.newaxis]
+
+    overlay = np.zeros_like(tunnel_float)
+    blended = tunnel_float * (1 - shapes_float * opacity) + overlay * (shapes_float * opacity)
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+# ================== Main Function ==================
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
+    screen_info = pygame.display.Info()
+    screen_w, screen_h = screen_info.current_w, screen_info.current_h
+
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+    scroll_pos = 0
+    max_scroll = screen_w - THUMB_WIDTH
+    dragging = False
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        progression = scroll_pos / max_scroll
+
+        # No symptoms in the early stage
+        if progression <= 0.0:
+            processed = frame  # No effects applied
+        else:
+            # Tunnel vision shrinks at a **slower rate** initially
+            tunnel_radius_scale = 1.8 - (progression ** 0.6) * 1.7  
+            tunnel_mask = create_dynamic_irregular_mask(
+                (720, 1280), radius_scale=tunnel_radius_scale, noise_strength=0.7, edge_fade_size=199
+            )
+            processed = apply_dynamic_tunnel_vision(frame, tunnel_mask, 1.0)
+
+            # Irregular shapes start appearing at 50% progression and grow in size
+            if progression >= 0.2:
+                shapes_scale = (progression - 0.2) / 0.2  # Scale from 0 to 1 as progression goes from 0.5 to 1.0
+                shapes_mask = create_dynamic_irregular_shapes_mask(
+                    (720, 1280), width=350, height=130, placement_radius=170, irregularity=1.5, scale=shapes_scale
+                )
+                processed = apply_dynamic_irregular_shapes(processed, shapes_mask, opacity=0.7)
+
+        # Convert to Pygame surface
+        rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
+        rgb = cv2.resize(rgb, (screen_w, screen_h))
+        surf = pygame.surfarray.make_surface(np.rot90(rgb))
+
+        # Draw scrollbar
+        pygame.draw.rect(surf, SCROLLBAR_COLOR, (0, screen_h - SCROLLBAR_HEIGHT, screen_w, SCROLLBAR_HEIGHT))
+        pygame.draw.rect(surf, THUMB_COLOR, (scroll_pos, screen_h - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+
+        # Update display
+        screen.blit(surf, (0, 0))
+        pygame.display.flip()
+
+        # Handle events
+        for event in pygame.event.get():
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
+            elif event.type == MOUSEBUTTONDOWN:
+                if screen_h - SCROLLBAR_HEIGHT <= event.pos[1] <= screen_h:
+                    dragging = True
+            elif event.type == MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == MOUSEMOTION and dragging:
+                scroll_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_scroll))
+
+    cap.release()
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
