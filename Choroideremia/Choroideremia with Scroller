@@ -15,7 +15,13 @@ SCROLLBAR_COLOR = (100, 100, 100)
 THUMB_COLOR = (200, 200, 200)
 THUMB_WIDTH = 40
 
-# ================== Night Blindness Function ==================
+# ================== Night Blindness Functions ==================
+
+def separable_gaussian_blur(image, kernel_size, sigma):
+    """
+    Apply Gaussian blur more efficiently using separable filters.
+    """
+    return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
 
 def simulate_night_blindness(image, adjustment_level):
     """
@@ -33,9 +39,24 @@ def simulate_night_blindness(image, adjustment_level):
     darkened_image = np.clip(darkened_image, 0, 255)
     
     # Apply a blur to simulate difficulty seeing clearly in the dark
-    blurred_image = cv2.GaussianBlur(darkened_image, (31, 31), 10)  # Larger blur kernel for a significant blur effect
+    blurred_image = separable_gaussian_blur(darkened_image, 31, 10)  # Larger blur kernel for a significant blur effect
     
     return blurred_image.astype(np.uint8)
+
+def detect_light_condition(frame):
+    """
+    Detect the average brightness of the frame to simulate light condition (bright or dark).
+    
+    Parameters:
+    - frame: Input image in BGR format.
+    
+    Returns:
+    - Float representing the average brightness.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    avg_brightness = np.mean(gray)
+    
+    return avg_brightness
 
 # ================== Tunnel Vision Functions ==================
 
@@ -163,22 +184,29 @@ def main():
 
         progression = scroll_pos / max_scroll
 
-        # No symptoms in the early stage
+        # ================== No Symptoms at Start ==================
         if progression <= 0.0:
             processed = frame  # No effects applied
         else:
-            # Apply night blindness effect based on progression
-            night_blindness_level = max(0.2, 1.0 - progression)  # Darkening level increases as progression increases
-            processed = simulate_night_blindness(frame, night_blindness_level)
+            # ================== Detect Light Condition ==================
+            avg_brightness = detect_light_condition(frame)
 
-            # Tunnel vision shrinks at a **slower rate** initially
+            # ================== Apply Night Blindness Only in Dark Conditions ==================
+            if avg_brightness < 100:  # Dark condition (threshold can be adjusted)
+                print("In darkness, simulating night blindness.")
+                processed = simulate_night_blindness(frame, adjustment_level=0.5)  # Adjust the darkening level as needed
+            else:
+                print("In light, normal vision.")
+                processed = frame  # No night blindness effect in bright conditions
+
+            # ================== Apply Tunnel Vision ==================
             tunnel_radius_scale = 1.8 - (progression ** 0.6) * 1.7  
             tunnel_mask = create_dynamic_irregular_mask(
                 (720, 1280), radius_scale=tunnel_radius_scale, noise_strength=0.7, edge_fade_size=199
             )
             processed = apply_dynamic_tunnel_vision(processed, tunnel_mask, 1.0)
 
-            # Irregular shapes start appearing at 50% progression and grow in size
+            # ================== Apply Irregular Shapes ==================
             if progression >= 0.2:
                 shapes_scale = (progression - 0.2) / 0.2  # Scale from 0 to 1 as progression goes from 0.5 to 1.0
                 shapes_mask = create_dynamic_irregular_shapes_mask(
@@ -186,7 +214,7 @@ def main():
                 )
                 processed = apply_dynamic_irregular_shapes(processed, shapes_mask, opacity=0.7)
 
-        # Convert to Pygame surface
+        # ================== Convert to Pygame Surface ==================
         rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
         rgb = cv2.resize(rgb, (screen_w, screen_h))
         surf = pygame.surfarray.make_surface(np.rot90(rgb))
