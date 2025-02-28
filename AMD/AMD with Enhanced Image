@@ -1,0 +1,209 @@
+import cv2
+import numpy as np
+import pygame
+from pygame.locals import *
+
+# Enable GPU acceleration in OpenCV
+cv2.setUseOptimized(True)
+cv2.ocl.setUseOpenCL(True)
+
+# Scrollbar parameters
+SCROLLBAR_HEIGHT = 20
+SCROLLBAR_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+THUMB_WIDTH = 40
+
+class AMDState:
+    def __init__(self):
+        self.current_mask = None
+        self.current_params = (0, 0)
+        self.organic_seed = 42  # Fixed seed for consistent extensions
+
+    def compute_blur_mask(self, image, sigma):
+        """Compute a blur mask based on distance from the image center."""
+        if sigma <= 0:
+            return np.zeros((image.shape[0], image.shape[1]), dtype=np.float32)
+        else:
+            h, w = image.shape[:2]
+            center_x, center_y = w // 2, h // 2
+            y_indices, x_indices = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
+            distance_from_center = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
+            blur_mask = np.exp(-(distance_from_center**2) / (2 * (sigma**2))).astype(np.float32)
+            blur_mask = cv2.normalize(blur_mask, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+            return blur_mask
+
+    def apply_blur_effect(self, image, blur_mask):
+        """Apply a Gaussian blur effect modulated by the blur mask."""
+        if np.all(blur_mask == 0):
+            return image
+        gaussian_kernel = cv2.getGaussianKernel(31, 50)  # Fixed sigma for heavy blur
+        heavy_blur = cv2.sepFilter2D(image, -1, gaussian_kernel, gaussian_kernel)
+        blur_mask_3d = cv2.merge([blur_mask] * 3)
+        blurred_part = cv2.multiply(heavy_blur.astype(np.float32), blur_mask_3d)
+        original_part = cv2.multiply(image.astype(np.float32), 1 - blur_mask_3d)
+        return cv2.add(blurred_part, original_part).astype(np.uint8)
+
+    def generate_organic_extensions(self, mask, h, w, extension_prob):
+        """Add organic blob extensions to the mask."""
+        rng = np.random.RandomState(self.organic_seed)
+        random_mask = (rng.rand(h, w) < extension_prob) & (mask > 0.5) & (mask < 1)
+        random_indices = np.column_stack(np.where(random_mask))
+        for y_ext, x_ext in random_indices:
+            blob_radius = rng.randint(10, 30)
+            cv2.circle(mask, (x_ext, y_ext), blob_radius, 1, -1)
+        return cv2.GaussianBlur(mask.astype(np.float32), (51, 51), 0)
+
+    def create_black_spot_mask(self, frame, spot_size, fade_area):
+        """Create a mask with a central black spot and organic extensions."""
+        h, w = frame.shape[:2]
+        y, x = np.ogrid[:h, :w]
+        center_x, center_y = w//2, h//2
+        distances = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+        mask = np.ones((h, w), dtype=np.float32)
+        mask[distances <= spot_size] = 0
+        fade_zone = (distances > spot_size) & (distances <= spot_size + fade_area)
+        mask[fade_zone] = (distances[fade_zone] - spot_size) / fade_area
+        extension_prob = 0.006 if spot_size <= 5 else 0.005
+        return self.generate_organic_extensions(mask, h, w, extension_prob)
+
+    def apply_distortion(self, image, center_x, center_y, radius):
+        """Apply a sinusoidal distortion within a radius."""
+        rows, cols = image.shape[:2]
+        amplitude, wavelength = 2, 100
+        shift_x = (amplitude * np.sin(2 * np.pi * np.arange(rows)[:, None] / wavelength)).astype(int)
+        shift_y = (amplitude * np.cos(2 * np.pi * np.arange(cols)[None, :] / wavelength)).astype(int)
+        y_indices, x_indices = np.meshgrid(np.arange(rows), np.arange(cols), indexing='ij')
+        distances = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
+        within_radius = distances <= radius
+        new_x = np.clip(x_indices + shift_x * within_radius, 0, cols - 1)
+        new_y = np.clip(y_indices + shift_y * within_radius, 0, rows - 1)
+        distorted = image.copy()
+        distorted[within_radius] = image[new_y[within_radius], new_x[within_radius]]
+        return distorted
+
+def unsharp_mask(image, blur_mask, sigma=1.5, base_strength=2.0):
+    """Apply an unsharp mask to enhance image details."""
+    blurred = cv2.GaussianBlur(image, (0, 0), sigma)
+    enhance_mask = 1 - blur_mask
+    strength_map = base_strength * enhance_mask
+    strength_map_3d = cv2.merge([strength_map] * 3)
+    sharpened = image.astype(np.float32) + strength_map_3d * (image.astype(np.float32) - blurred.astype(np.float32))
+    return np.clip(sharpened, 0, 255).astype(np.uint8)
+
+def apply_edge_overlay(frame, blur_mask):
+    """Overlay white edges with reduced detection and increased contrast."""
+    simplified = cv2.bilateralFilter(frame, d=9, sigmaColor=75, sigmaSpace=75)
+    gray = cv2.cvtColor(simplified, cv2.COLOR_BGR2GRAY)
+    small_gray = cv2.resize(gray, (320, 180))
+    grad_x = cv2.Sobel(small_gray, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(small_gray, cv2.CV_64F, 0, 1, ksize=3)
+    grad_mag = np.sqrt(grad_x**2 + grad_y**2)
+    
+    # Increase thresholds to detect fewer, stronger edges
+    lower_threshold = max(10, np.percentile(grad_mag, 50))
+    upper_threshold = max(20, np.percentile(grad_mag, 80))
+    
+    edges = cv2.Canny(gray, lower_threshold, upper_threshold)
+    
+    # Thicken edges more aggressively for higher visibility
+    kernel = np.ones((6, 6), np.uint8)
+    thick_edges = cv2.dilate(edges, kernel, iterations=3)
+    closed_edges = cv2.morphologyEx(thick_edges, cv2.MORPH_CLOSE, kernel)
+    
+    frame_with_edges = frame.copy()
+    enhance_mask = 1 - blur_mask
+    # Calculate intensity for white edges (same for all channels)
+    white_intensity = np.clip(255 * (1 + 2 * enhance_mask), 0, 255).astype(np.uint8)
+    
+    edges_mask = closed_edges == 255
+    frame_with_edges[edges_mask, 0] = white_intensity[edges_mask]  # Blue
+    frame_with_edges[edges_mask, 1] = white_intensity[edges_mask]  # Green
+    frame_with_edges[edges_mask, 2] = white_intensity[edges_mask]  # Red
+    return frame_with_edges
+
+def main():
+    """Main loop for the video processing application."""
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    screen_info = pygame.display.Info()
+    screen_w, screen_h = screen_info.current_w, screen_info.current_h
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    amd_state = AMDState()
+    scroll_pos = 0
+    max_scroll = screen_w - THUMB_WIDTH
+    dragging = False
+    current_mask = None
+    last_params = (-1, -1)
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Calculate progression and effect parameters based on scrollbar position
+        progression = scroll_pos / max_scroll
+        if progression <= 0.33:
+            blur_strength = progression / 0.33
+            spot_size = 0
+            fade_area = 0
+        elif progression <= 0.66:
+            blur_strength = 1.0
+            mid_progress = (progression - 0.33) / 0.33
+            spot_size = mid_progress * 5
+            fade_area = mid_progress * 500
+        else:
+            blur_strength = 1.0
+            late_progress = (progression - 0.66) / 0.34
+            spot_size = 5 + late_progress * 175
+            fade_area = 500 - late_progress * 310
+
+        # Apply effects
+        sigma = blur_strength * (frame.shape[1] // 4)
+        blur_mask = amd_state.compute_blur_mask(frame, sigma)
+        sharpened = unsharp_mask(frame, blur_mask, sigma=1.5, base_strength=2.0)
+        enhanced = apply_edge_overlay(sharpened, blur_mask)
+        processed = amd_state.apply_blur_effect(enhanced, blur_mask)
+
+        if spot_size > 0:
+            if (spot_size, fade_area) != last_params:
+                current_mask = amd_state.create_black_spot_mask(enhanced, spot_size, fade_area)
+                last_params = (spot_size, fade_area)
+            small_frame = cv2.resize(processed, (640, 360))
+            small_mask = cv2.resize(current_mask, (640, 360))
+            faded = cv2.resize((small_frame * small_mask[..., None]).astype(np.uint8), 
+                              (processed.shape[1], processed.shape[0]))
+            processed = amd_state.apply_distortion(faded, processed.shape[1]//2, 
+                                                 processed.shape[0]//2, int(spot_size + fade_area + 50))
+
+        # Convert and display the frame
+        rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
+        rgb = cv2.resize(rgb, (screen_w, screen_h))
+        surf = pygame.surfarray.make_surface(np.rot90(rgb))
+
+        # Draw scrollbar
+        pygame.draw.rect(surf, SCROLLBAR_COLOR, (0, screen_h - SCROLLBAR_HEIGHT, screen_w, SCROLLBAR_HEIGHT))
+        pygame.draw.rect(surf, THUMB_COLOR, (scroll_pos, screen_h - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+        screen.blit(surf, (0, 0))
+        pygame.display.flip()
+
+        # Handle events
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if screen_h - SCROLLBAR_HEIGHT <= event.pos[1] <= screen_h:
+                    dragging = True
+            elif event.type == pygame.MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == pygame.MOUSEMOTION and dragging:
+                scroll_pos = max(0, min(event.pos[0] - THUMB_WIDTH//2, max_scroll))
+
+    cap.release()
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
