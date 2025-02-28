@@ -15,6 +15,28 @@ SCROLLBAR_COLOR = (100, 100, 100)
 THUMB_COLOR = (200, 200, 200)
 THUMB_WIDTH = 40
 
+# ================== Night Blindness Function ==================
+
+def simulate_night_blindness(image, adjustment_level):
+    """
+    Simulate night blindness by darkening and blurring the image.
+    
+    Parameters:
+    - image: Input image in BGR format.
+    - adjustment_level: Float between 0 and 1 indicating the darkening level.
+    
+    Returns:
+    - Blurred and darkened image in uint8 format.
+    """
+    # Darken the image based on the adjustment level
+    darkened_image = image * adjustment_level
+    darkened_image = np.clip(darkened_image, 0, 255)
+    
+    # Apply a blur to simulate difficulty seeing clearly in the dark
+    blurred_image = cv2.GaussianBlur(darkened_image, (31, 31), 10)  # Larger blur kernel for a significant blur effect
+    
+    return blurred_image.astype(np.uint8)
+
 # ================== Tunnel Vision Functions ==================
 
 def create_dynamic_irregular_mask(shape, radius_scale, noise_strength, edge_fade_size, seed=42):
@@ -145,12 +167,16 @@ def main():
         if progression <= 0.0:
             processed = frame  # No effects applied
         else:
+            # Apply night blindness effect based on progression
+            night_blindness_level = max(0.2, 1.0 - progression)  # Darkening level increases as progression increases
+            processed = simulate_night_blindness(frame, night_blindness_level)
+
             # Tunnel vision shrinks at a **slower rate** initially
             tunnel_radius_scale = 1.8 - (progression ** 0.6) * 1.7  
             tunnel_mask = create_dynamic_irregular_mask(
                 (720, 1280), radius_scale=tunnel_radius_scale, noise_strength=0.7, edge_fade_size=199
             )
-            processed = apply_dynamic_tunnel_vision(frame, tunnel_mask, 1.0)
+            processed = apply_dynamic_tunnel_vision(processed, tunnel_mask, 1.0)
 
             # Irregular shapes start appearing at 50% progression and grow in size
             if progression >= 0.2:
