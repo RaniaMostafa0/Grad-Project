@@ -194,8 +194,9 @@ def main():
             # ================== Apply Night Blindness Only in Dark Conditions ==================
             if avg_brightness < 100:  # Dark condition (threshold can be adjusted)
                 print("In darkness, simulating night blindness.")
-                # Increase the adjustment level based on progression
-                adjustment_level = max(0.2, 1.0 - progression)  # Darkening level increases as progression increases
+                # Adjust the adjustment level based on the slider's position
+                adjustment_level = 1.0 - progression  # Darkening level increases as progression increases
+                adjustment_level = max(0.2, adjustment_level)  # Ensure it doesn't go below 0.2
                 processed = simulate_night_blindness(frame, adjustment_level)
             else:
                 print("In light, normal vision.")
