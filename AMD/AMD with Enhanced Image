@@ -91,7 +91,7 @@ def unsharp_mask(image, blur_mask, sigma=1.5, base_strength=2.0):
     return np.clip(sharpened, 0, 255).astype(np.uint8)
 
 def apply_edge_overlay(frame, blur_mask):
-    """Overlay white edges with reduced detection and increased contrast."""
+    """Overlay white edges restricted to the central area matching final black spot size"""
     simplified = cv2.bilateralFilter(frame, d=9, sigmaColor=75, sigmaSpace=75)
     gray = cv2.cvtColor(simplified, cv2.COLOR_BGR2GRAY)
     small_gray = cv2.resize(gray, (320, 180))
@@ -99,28 +99,36 @@ def apply_edge_overlay(frame, blur_mask):
     grad_y = cv2.Sobel(small_gray, cv2.CV_64F, 0, 1, ksize=3)
     grad_mag = np.sqrt(grad_x**2 + grad_y**2)
     
-    # Increase thresholds to detect fewer, stronger edges
+    # Increased thresholds for stronger edges
     lower_threshold = max(10, np.percentile(grad_mag, 50))
     upper_threshold = max(20, np.percentile(grad_mag, 80))
     
     edges = cv2.Canny(gray, lower_threshold, upper_threshold)
     
-    # Thicken edges more aggressively for higher visibility
-    kernel = np.ones((6, 6), np.uint8)
-    thick_edges = cv2.dilate(edges, kernel, iterations=3)
+    # Edge processing
+    kernel = np.ones((4, 4), np.uint8)
+    thick_edges = cv2.dilate(edges, kernel, iterations=1)
     closed_edges = cv2.morphologyEx(thick_edges, cv2.MORPH_CLOSE, kernel)
     
+    # Directly restrict edges to final black spot radius (370px) without mask
+    h, w = frame.shape[:2]
+    center_x, center_y = w//2, h//2
+    final_radius = 370  # Matches final stage spot_size (180) + fade_area (190)
+    
+    # Create grid arrays
+    y, x = np.ogrid[:h, :w]
+    # Calculate squared distances from center
+    dist_sq = (x - center_x)**2 + (y - center_y)**2
+    # Zero out edges beyond final radius
+    closed_edges[dist_sq > final_radius**2] = 0
+
     frame_with_edges = frame.copy()
     enhance_mask = 1 - blur_mask
-    # Calculate intensity for white edges (same for all channels)
     white_intensity = np.clip(255 * (1 + 2 * enhance_mask), 0, 255).astype(np.uint8)
     
     edges_mask = closed_edges == 255
-    frame_with_edges[edges_mask, 0] = white_intensity[edges_mask]  # Blue
-    frame_with_edges[edges_mask, 1] = white_intensity[edges_mask]  # Green
-    frame_with_edges[edges_mask, 2] = white_intensity[edges_mask]  # Red
+    frame_with_edges[edges_mask] = white_intensity[edges_mask][:, None]
     return frame_with_edges
-
 def main():
     """Main loop for the video processing application."""
     pygame.init()
