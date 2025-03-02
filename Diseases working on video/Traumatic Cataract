@@ -1,0 +1,73 @@
+import cv2
+import numpy as np
+import time
+
+# Video input and output paths
+input_video_path = r"C:\Users\pc\Downloads\WhatsApp Video 2024-11-30 at 23.04.32_ebe3b33d.mp4"
+output_video_path = r"C:\Users\pc\Downloads\TRAUMATIC_video.mp4"
+
+# Start timing the entire process
+start_time = time.time()
+
+# Open the input video
+video_capture = cv2.VideoCapture(input_video_path)
+
+# Check if the video was opened successfully
+if not video_capture.isOpened():
+    raise FileNotFoundError(f"Unable to open video at {input_video_path}. Please check the file path.")
+
+# Get video properties
+frame_width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+fps = int(video_capture.get(cv2.CAP_PROP_FPS))
+frame_count = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+
+# Define the codec and create VideoWriter object
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec for .mp4 format
+video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
+
+# Process each frame
+frame_index = 0
+total_processing_time = 0
+while True:
+    ret, frame = video_capture.read()
+    if not ret:
+        break
+
+    frame_start = time.time()
+
+    # Convert to RGB for processing
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Apply Gaussian blur to the frame
+    blurred_frame = cv2.GaussianBlur(frame_rgb, (15, 15), 0)
+
+    # Convert back to BGR for saving
+    final_frame_bgr = cv2.cvtColor(blurred_frame, cv2.COLOR_RGB2BGR)
+
+    # Write the processed frame to the output video
+    video_writer.write(final_frame_bgr)
+
+    frame_end = time.time()
+    frame_processing_time = frame_end - frame_start
+    total_processing_time += frame_processing_time
+    frame_index += 1
+
+# Release resources
+video_capture.release()
+video_writer.release()
+
+end_time = time.time()
+
+# Calculate average processing time per frame
+average_processing_time_per_frame = total_processing_time / frame_index if frame_index > 0 else 0
+
+# Calculate average FPS for the processed video
+average_fps = frame_index / total_processing_time if total_processing_time > 0 else 0
+
+# Print timing results
+print(f"Total frames processed: {frame_index}")
+print(f"Total processing time: {total_processing_time:.4f} seconds")
+print(f"Average processing time per frame: {average_processing_time_per_frame:.4f} seconds")
+print(f"Average FPS for the processed video: {average_fps:.2f}")
+print(f"Processed video saved to: {output_video_path}")
