@@ -30,33 +30,43 @@ def process_frame(frame):
 
     return contrast_reduced_frame
 
-def get_scaled_dimensions(original_size, target_size):
+def display_frame_with_pygame(frame, screen):
     """
-    Calculate the new size to maintain aspect ratio.
-    
-    Parameters:
-    - original_size: Tuple of (width, height) of the original image.
-    - target_size: Tuple of (width, height) of the target display.
-    
-    Returns:
-    - new_size: Tuple of (width, height) after scaling.
-    - position: Tuple of (x, y) position to center the image.
+    Display a frame in a Pygame fullscreen window while maintaining aspect ratio and fitting horizontally.
     """
-    original_width, original_height = original_size
-    target_width, target_height = target_size
+    # Convert the frame from BGR to RGB
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    # Calculate scaling factor to fit the image within the target dimensions
-    scale_factor = min(target_width / original_width, target_height / original_height)
+    # Get screen dimensions
+    screen_width, screen_height = screen.get_size()
+    frame_height, frame_width = frame_rgb.shape[:2]
 
-    # Calculate new dimensions
-    new_width = int(original_width * scale_factor)
-    new_height = int(original_height * scale_factor)
+    # Calculate the scaling factor to fit the screen width
+    scale = screen_width / frame_width
 
-    # Calculate position to center the image
-    x_pos = (target_width - new_width) // 2
-    y_pos = (target_height - new_height) // 2
+    # Resize the frame to fit the screen width while maintaining aspect ratio
+    new_width = screen_width
+    new_height = int(frame_height * scale)
+    resized_frame = cv2.resize(frame_rgb, (new_width, new_height))
 
-    return (new_width, new_height), (x_pos, y_pos)
+    # Crop the frame vertically to fit the screen height
+    if new_height > screen_height:
+        # Calculate the vertical crop
+        crop_start = (new_height - screen_height) // 2
+        crop_end = crop_start + screen_height
+        cropped_frame = resized_frame[crop_start:crop_end, :]
+    else:
+        # If the frame is shorter than the screen height, center it vertically
+        cropped_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
+        y_offset = (screen_height - new_height) // 2
+        cropped_frame[y_offset:y_offset + new_height, :] = resized_frame
+
+    # Convert the cropped frame to a Pygame surface
+    frame_surface = pygame.surfarray.make_surface(cropped_frame.transpose([1, 0, 2]))
+
+    # Display the frame in the Pygame window
+    screen.blit(frame_surface, (0, 0))
+    pygame.display.flip()
 
 def simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720)):
     """
@@ -101,7 +111,7 @@ def simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720)):
                 if event.type == QUIT:
                     raise KeyboardInterrupt
                 if event.type == KEYDOWN:
-                    if event.key == K_ESCAPE:
+                    if event.key == K_ESCAPE:  # Exit on pressing ESC
                         raise KeyboardInterrupt
 
             ret, frame = cap.read()
@@ -115,27 +125,8 @@ def simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720)):
             # Process frame
             processed_frame = process_frame(frame)
 
-            # Convert BGR to RGB
-            frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-
-            # Get original frame size
-            original_size = frame_rgb.shape[1], frame_rgb.shape[0]  # (width, height)
-
-            # Calculate scaled size and position to maintain aspect ratio
-            scaled_size, position = get_scaled_dimensions(original_size, (screen_width, screen_height))
-
-            # Resize frame while maintaining aspect ratio
-            frame_resized = cv2.resize(frame_rgb, scaled_size, interpolation=cv2.INTER_AREA)
-
-            # Convert to Pygame surface
-            frame_surface = pygame.surfarray.make_surface(np.rot90(frame_resized))
-
-            # Clear the screen by filling it with black
-            screen.fill((0, 0, 0))
-
-            # Blit the frame to the screen at the calculated position
-            screen.blit(frame_surface, position)
-            pygame.display.flip()
+            # Display the frame in the Pygame window
+            display_frame_with_pygame(processed_frame, screen)
 
             # Calculate FPS
             processing_time = time.time() - start_time
@@ -165,4 +156,4 @@ def simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720)):
 
 # Example usage
 if __name__ == "__main__":
-    simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720))
+    simulate_cataract_realtime_pygame(webcam_index=1, resolution=(1280, 720))
