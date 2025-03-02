@@ -1,0 +1,183 @@
+import cv2
+import numpy as np
+import time
+from threading import Thread, Event
+from queue import Queue
+import pygame
+
+def apply_glare_and_halo(image, mask, halo_intensity=0.7, glare_intensity=0.5, glare_blur=11):
+    """
+    Applies glare and halo effect to the bright areas of the image.
+    """
+    mask_3channel = cv2.merge([mask, mask, mask])
+
+    # Add a halo effect by blurring the mask
+    halo_effect = cv2.GaussianBlur(mask_3channel, (glare_blur, glare_blur), 0)
+
+    # Apply the halo effect with blending
+    glare_halo = cv2.addWeighted(image, 1, halo_effect, halo_intensity, 0)
+
+    # Add glare by blending the bright mask with an intense light overlay
+    glare_overlay = np.full_like(image, (255, 255, 255), dtype=np.uint8)  # White overlay
+    glare_effect = cv2.addWeighted(image, 1 - glare_intensity, glare_overlay, glare_intensity, 0)
+
+    # Combine glare effect and halo effect
+    final_image = cv2.addWeighted(glare_halo, 1, glare_effect, 0.5, 0)
+
+    return final_image
+
+def decrease_contrast(image, factor=0.5):
+    """
+    Reduces contrast by blending the image with its mean gray value.
+    """
+    gray_mean = np.mean(image, dtype=np.float32)
+    blended = cv2.addWeighted(image, factor, np.full_like(image, gray_mean, dtype=np.uint8), 1 - factor, 0)
+    return blended
+
+def process_frame(frame):
+    """
+    Process a single frame with glare, halo, and contrast adjustment.
+    """
+    # Convert to grayscale for mask generation
+    gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # Create a mask for bright areas
+    _, bright_mask = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY)
+
+    # Apply glare and halo effect
+    glare_halo = apply_glare_and_halo(frame, bright_mask)
+
+    # Decrease contrast for the final frame
+    final_frame = decrease_contrast(glare_halo)
+
+    return final_frame
+
+def display_frame_with_pygame(frame, screen):
+    """
+    Display a frame in a Pygame fullscreen window while maintaining aspect ratio and fitting horizontally.
+    """
+    # Convert the frame from BGR to RGB
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Get screen dimensions
+    screen_width, screen_height = screen.get_size()
+    frame_height, frame_width = frame_rgb.shape[:2]
+
+    # Calculate the scaling factor to fit the screen width
+    scale = screen_width / frame_width
+
+    # Resize the frame to fit the screen width while maintaining aspect ratio
+    new_width = screen_width
+    new_height = int(frame_height * scale)
+    resized_frame = cv2.resize(frame_rgb, (new_width, new_height))
+
+    # Crop the frame vertically to fit the screen height
+    if new_height > screen_height:
+        # Calculate the vertical crop
+        crop_start = (new_height - screen_height) // 2
+        crop_end = crop_start + screen_height
+        cropped_frame = resized_frame[crop_start:crop_end, :]
+    else:
+        # If the frame is shorter than the screen height, center it vertically
+        cropped_frame = np.zeros((screen_height, screen_width, 3), dtype=np.uint8)
+        y_offset = (screen_height - new_height) // 2
+        cropped_frame[y_offset:y_offset + new_height, :] = resized_frame
+
+    # Convert the cropped frame to a Pygame surface
+    frame_surface = pygame.surfarray.make_surface(cropped_frame.transpose([1, 0, 2]))
+
+    # Display the frame in the Pygame window
+    screen.blit(frame_surface, (0, 0))
+    pygame.display.flip()
+
+def video_reader(cap, frame_queue, stop_event):
+    """
+    Reads frames from the video capture and pushes them to a queue.
+    """
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            stop_event.set()
+            break
+        frame_queue.put(frame)
+
+def video_processor(frame_queue, stop_event, screen):
+    """
+    Processes frames in real-time and displays them in a Pygame window.
+    """
+    total_processing_time = 0
+    frame_count = 0
+
+    try:
+        while not stop_event.is_set() or not frame_queue.empty():
+            # Handle Pygame events
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    stop_event.set()
+                    break
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:  # Exit on pressing ESC
+                        stop_event.set()
+                        break
+
+            if not frame_queue.empty():
+                frame = frame_queue.get()
+
+                start_time = time.time()
+                processed_frame = process_frame(frame)
+                display_frame_with_pygame(processed_frame, screen)
+
+                processing_time_frame = time.time() - start_time
+                total_processing_time += processing_time_frame
+                frame_count += 1
+
+                # Calculate and print FPS
+                fps = 1 / processing_time_frame
+                print(f"FPS: {fps:.2f}", end='\r')
+
+    except KeyboardInterrupt:
+        stop_event.set()
+
+    finally:
+        if frame_count > 0:
+            avg_processing_time = total_processing_time / frame_count
+            overall_fps = frame_count / total_processing_time
+            print(f"\nAverage processing time per frame: {avg_processing_time:.4f} seconds")
+            print(f"Real-time processing FPS: {overall_fps:.2f}")
+
+def realtime_video_processing():
+    """
+    Real-time processing of video frames from a webcam or video file using Pygame for display.
+    """
+    cap = cv2.VideoCapture(1)  # Use 0 for default webcam
+
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+
+    # Initialize Pygame
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    pygame.display.set_caption("Real-time Video Processing")
+
+    frame_queue = Queue(maxsize=10)  # Queue to hold frames
+    stop_event = Event()  # Event to signal threads to stop
+
+    # Start threads for reading and processing
+    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
+    reader_thread.start()
+
+    try:
+        video_processor(frame_queue, stop_event, screen)
+
+    except KeyboardInterrupt:
+        print("\nExiting real-time video processing.")
+
+    finally:
+        stop_event.set()
+        reader_thread.join()
+        cap.release()
+        pygame.quit()
+
+# Run real-time processing
+realtime_video_processing()
