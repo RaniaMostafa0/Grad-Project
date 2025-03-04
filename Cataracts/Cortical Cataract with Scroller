@@ -1,0 +1,95 @@
+import cv2
+import numpy as np
+import time
+from threading import Thread, Event
+from queue import Queue
+import pygame
+
+# Slider parameters
+SLIDER_HEIGHT = 20
+SLIDER_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+THUMB_WIDTH = 40
+
+def apply_glare_and_halo(image, mask, halo_intensity=0.7, glare_intensity=0.5, glare_blur=11):
+    mask_3channel = cv2.merge([mask, mask, mask])
+    halo_effect = cv2.GaussianBlur(mask_3channel, (glare_blur, glare_blur), 0)
+    glare_halo = cv2.addWeighted(image, 1, halo_effect, halo_intensity, 0)
+    glare_overlay = np.full_like(image, (255, 255, 255), dtype=np.uint8)
+    glare_effect = cv2.addWeighted(image, 1 - glare_intensity, glare_overlay, glare_intensity, 0)
+    final_image = cv2.addWeighted(glare_halo, 1, glare_effect, 0.5, 0)
+    return final_image
+
+def decrease_contrast(image, factor=0.5):
+    gray_mean = np.mean(image, dtype=np.float32)
+    blended = cv2.addWeighted(image, factor, np.full_like(image, gray_mean, dtype=np.uint8), 1 - factor, 0)
+    return blended
+
+def process_frame(frame, intensity):
+    gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, bright_mask = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY)
+    glare_halo = apply_glare_and_halo(frame, bright_mask, halo_intensity=intensity, glare_intensity=intensity)
+    final_frame = decrease_contrast(glare_halo, factor=1 - intensity)
+    return final_frame
+
+def display_frame_with_pygame(frame, screen, slider_pos, max_slider_pos):
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame_surface = pygame.surfarray.make_surface(frame_rgb.transpose([1, 0, 2]))
+    screen.blit(frame_surface, (0, 0))
+    pygame.draw.rect(screen, SLIDER_COLOR, (0, screen.get_height() - SLIDER_HEIGHT, screen.get_width(), SLIDER_HEIGHT))
+    pygame.draw.rect(screen, THUMB_COLOR, (slider_pos, screen.get_height() - SLIDER_HEIGHT, THUMB_WIDTH, SLIDER_HEIGHT))
+    pygame.display.flip()
+
+def video_reader(cap, frame_queue, stop_event):
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            stop_event.set()
+            break
+        frame = cv2.flip(frame, 1)
+        frame_queue.put(frame)
+
+def video_processor(frame_queue, stop_event, screen):
+    slider_pos = 0
+    max_slider_pos = screen.get_width() - THUMB_WIDTH
+    dragging = False
+    while not stop_event.is_set() or not frame_queue.empty():
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                stop_event.set()
+                break
+            elif event.type == pygame.MOUSEBUTTONDOWN and screen.get_height() - SLIDER_HEIGHT <= event.pos[1]:
+                dragging = True
+            elif event.type == pygame.MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == pygame.MOUSEMOTION and dragging:
+                slider_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_slider_pos))
+        if not frame_queue.empty():
+            frame = frame_queue.get()
+            intensity = slider_pos / max_slider_pos
+            processed_frame = process_frame(frame, intensity)
+            display_frame_with_pygame(processed_frame, screen, slider_pos, max_slider_pos)
+
+def realtime_video_processing():
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+    pygame.init()
+    screen = pygame.display.set_mode((1280, 720), pygame.FULLSCREEN)
+    pygame.display.set_caption("Real-time Video Processing with Slider")
+    frame_queue = Queue(maxsize=10)
+    stop_event = Event()
+    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
+    reader_thread.start()
+    try:
+        video_processor(frame_queue, stop_event, screen)
+    finally:
+        stop_event.set()
+        reader_thread.join()
+        cap.release()
+        pygame.quit()
+
+realtime_video_processing()
