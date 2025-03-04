@@ -17,58 +17,34 @@ def separable_gaussian_blur(image, kernel_size, sigma):
     gaussian_1d = cv2.getGaussianKernel(kernel_size, sigma)
     return cv2.sepFilter2D(image, -1, gaussian_1d, gaussian_1d.T)
 
-def create_stargardt_mask(shape, intensity=1.0):
-    """Create a Stargardt mask with organic extensions and smooth fading."""
+def create_stargardt_mask(shape, intensity=0.0):
+    """Create an irregular central vision loss mask that increases in size."""
     rows, cols = shape
     center_x, center_y = cols // 2, rows // 2
-    y, x = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
-    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    mask = np.zeros((rows, cols), dtype=np.float32)
     
-    # Define base radii for black and fading regions
-    max_radius = max(rows, cols)  # Maximum possible radius to cover the entire screen
-    inner_radius = int(80 * intensity)  # Inner radius grows with intensity
-    outer_radius = int(max_radius * (1.5 * intensity))  # Extend to 150% for full coverage
+    # Ensure minimum values to prevent errors
+    min_radius = 20
+    max_radius = max(int(300 * intensity), min_radius)  
+    min_irregularity = 5
+    irregularity = max(int(50 * intensity), min_irregularity)
     
-    # Generate base mask with radial gradient
-    mask = np.zeros_like(distance, dtype=np.float32)
-    mask[distance <= inner_radius] = 1  # Fully black inside inner radius
-    fading_region = (distance > inner_radius) & (distance <= outer_radius)
-    mask[fading_region] = 1 - (distance[fading_region] - inner_radius) / (outer_radius - inner_radius)
+    for _ in range(30):  
+        offset_x = np.random.randint(-irregularity, irregularity + 1)
+        offset_y = np.random.randint(-irregularity, irregularity + 1)
+        radius = np.random.randint(max_radius // 2, max_radius + 1)
+        cv2.circle(mask, (center_x + offset_x, center_y + offset_y), radius, 1, -1)
     
-    # Add random extensions around the edges
-    num_extensions = int(120 * intensity)
-    max_extension_length = int(45 * intensity)
-    for _ in range(num_extensions):
-        angle = np.random.uniform(0, 2 * np.pi)
-        extension_length = np.random.uniform(inner_radius, inner_radius + max_extension_length)
-        extension_x = int(center_x + extension_length * np.cos(angle))
-        extension_y = int(center_y + extension_length * np.sin(angle))
-        cv2.circle(mask, (extension_x, extension_y), radius=10, color=1, thickness=-1)
-    
-    # Smooth and pixelate the mask
-    smoothed_mask = separable_gaussian_blur(mask, kernel_size=61, sigma=30)
-    block_size = 10
-    pixelated_mask = cv2.resize(smoothed_mask, 
-                               (cols // block_size, rows // block_size), 
-                               interpolation=cv2.INTER_AREA)
-    pixelated_mask = cv2.resize(pixelated_mask, (cols, rows), 
-                               interpolation=cv2.INTER_NEAREST)
-    final_mask = separable_gaussian_blur(pixelated_mask, kernel_size=51, sigma=20)
-    return final_mask
+    blurred_mask = separable_gaussian_blur(mask, kernel_size=51, sigma=20)
+    return blurred_mask
 
 def process_frame(frame, stargardt_mask):
     """Applies glare and Stargardt simulation using a static mask."""
-    gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, bright_areas = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY)
-    bright_mask = cv2.merge([bright_areas, bright_areas, bright_areas])
-    glare_image = apply_glare(frame, bright_mask)
-    final_image_with_glare = cv2.addWeighted(frame, 1, glare_image, 0.4, 0)
-    faded_spot = (final_image_with_glare * (1 - stargardt_mask[..., np.newaxis])).astype(np.uint8)
+    faded_spot = (frame * (1 - stargardt_mask[..., np.newaxis])).astype(np.uint8)
     return faded_spot
 
 def simulate_realtime_processing():
     """Main processing loop with Pygame fullscreen display."""
-    # Initialize webcam
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
@@ -76,22 +52,11 @@ def simulate_realtime_processing():
         print("Failed to open webcam.")
         return
     
-    # Initialize Pygame
     pygame.init()
     screen = pygame.display.set_mode((0, 0), FULLSCREEN)
-    pygame.display.set_caption('Stargardt Simulation')
     screen_w = pygame.display.Info().current_w
     screen_h = pygame.display.Info().current_h
     
-    # Create initial Stargardt mask
-    ret, sample_frame = cap.read()
-    if not ret:
-        print("Failed to capture frame for mask creation.")
-        cap.release()
-        pygame.quit()
-        return
-    
-    # Slider variables
     slider_x = 50
     slider_y = screen_h - 50
     slider_width = screen_w - 100
@@ -101,59 +66,27 @@ def simulate_realtime_processing():
     try:
         while True:
             start_time = time.time()
-            
-            # Capture frame
             ret, frame = cap.read()
             if not ret:
                 print("Failed to capture frame.")
                 break
             
-            # Calculate intensity based on slider position
             intensity = slider_pos / slider_width
-            
-            # Create Stargardt mask with current intensity
             stargardt_mask = create_stargardt_mask(frame.shape[:2], intensity)
-            
-            # Process frame
             processed_frame = process_frame(frame, stargardt_mask)
             
-            # Resize frame to match screen dimensions while preserving aspect ratio
-            frame_aspect_ratio = frame.shape[1] / frame.shape[0]
-            screen_aspect_ratio = screen_w / screen_h
-            
-            if frame_aspect_ratio > screen_aspect_ratio:
-                # Frame is wider than screen, scale by width
-                new_width = screen_w
-                new_height = int(new_width / frame_aspect_ratio)
-            else:
-                # Frame is taller than screen, scale by height
-                new_height = screen_h
-                new_width = int(new_height * frame_aspect_ratio)
-            
-            resized_frame = cv2.resize(processed_frame, (new_width, new_height))
-            
-            # Create a black background to center the resized frame
-            background = np.zeros((screen_h, screen_w, 3), dtype=np.uint8)
-            x_offset = (screen_w - new_width) // 2
-            y_offset = (screen_h - new_height) // 2
-            background[y_offset:y_offset + new_height, x_offset:x_offset + new_width] = resized_frame
-            
-            # Convert to Pygame surface
-            rgb_frame = cv2.cvtColor(background, cv2.COLOR_BGR2RGB)
+            resized_frame = cv2.resize(processed_frame, (screen_w, screen_h))
+            rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
             pygame_frame = pygame.surfarray.make_surface(np.rot90(rgb_frame))
             screen.blit(pygame_frame, (0, 0))
             
-            # Draw slider
             pygame.draw.rect(screen, (255, 255, 255), (slider_x, slider_y, slider_width, slider_height), 2)
             pygame.draw.rect(screen, (255, 0, 0), (slider_x, slider_y, slider_pos, slider_height))
-            
             pygame.display.flip()
             
-            # FPS calculation
             fps = 1 / (time.time() - start_time)
             print(f"FPS: {fps:.1f}", end='\r')
             
-            # Event handling
             for event in pygame.event.get():
                 if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                     raise KeyboardInterrupt
@@ -161,7 +94,7 @@ def simulate_realtime_processing():
                     if slider_x <= event.pos[0] <= slider_x + slider_width and slider_y <= event.pos[1] <= slider_y + slider_height:
                         slider_pos = event.pos[0] - slider_x
                 elif event.type == MOUSEMOTION:
-                    if event.buttons[0]:  # Left mouse button is held down
+                    if event.buttons[0]:
                         if slider_x <= event.pos[0] <= slider_x + slider_width:
                             slider_pos = event.pos[0] - slider_x
     
