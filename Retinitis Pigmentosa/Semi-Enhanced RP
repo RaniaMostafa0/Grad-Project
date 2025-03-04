@@ -1,0 +1,223 @@
+import cv2
+import numpy as np
+import time
+import pygame
+from pygame.locals import *
+
+# Slider parameters
+SCROLLBAR_HEIGHT = 20
+SCROLLBAR_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+THUMB_WIDTH = 40
+PADDING = 50
+
+# Generate a static noise pattern once for a consistent mask shape
+STATIC_NOISE = np.random.rand(360) - 0.5  # Fixed between -0.5 and 0.5
+
+def create_fixed_shape_mask(shape, radius_scale, noise_strength=0.7):
+    """
+    Create a tunnel vision mask with a fixed shape that scales in size.
+    The shape is determined by static noise and doesn't change, only its size does.
+    """
+    rows, cols = shape
+    center_x, center_y = cols // 2, rows // 2
+    base_radius = int(min(center_x, center_y) * radius_scale)
+    
+    y, x = np.ogrid[:rows, :cols]
+    angle = np.arctan2(y - center_y, x - center_x)
+    distance = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+    
+    # Use static noise to create a consistent irregular shape
+    random_radii = base_radius * (1 + noise_strength * STATIC_NOISE)
+    radius_map = np.interp((np.degrees(angle) + 360) % 360, np.arange(360), random_radii)
+    
+    mask = (distance < radius_map).astype(np.float32)
+    # Apply a moderate blur for a smooth transition, fixed kernel size for consistency
+    return cv2.GaussianBlur(mask, (51, 51), 0)
+
+def apply_tunnel_vision(frame, mask):
+    """Apply tunnel vision effect using the current mask"""
+    resized_mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
+    return (frame.astype(np.float32) * resized_mask[..., np.newaxis]).astype(np.uint8)
+
+def get_interpolated_params(slider_value):
+    """
+    Calculate parameters based on slider position (0-1).
+    Only radius_scale varies to simulate progression, other effects adjusted minimally.
+    """
+    if slider_value < 0.33:
+        # Normal to Early stage
+        alpha = slider_value / 0.33
+        return (
+            1.0 - 0.4 * alpha,   # darken: 1.0 → 0.6
+            int(15 * alpha) | 1,  # kernel: 0 → 15 (odd)
+            5 * alpha,           # sigma: 0 → 5
+            3.0 - 1.8 * alpha    # radius_scale: 3.0 → 1.2
+        )
+    elif slider_value < 0.66:
+        # Early to Mid stage
+        alpha = (slider_value - 0.33) / 0.33
+        return (
+            0.6 - 0.2 * alpha,    # darken: 0.6 → 0.4
+            int(15 + 10 * alpha) | 1,  # kernel: 15 → 25
+            5 + 3 * alpha,        # sigma: 5 → 8
+            1.2 - 0.3 * alpha     # radius_scale: 1.2 → 0.9
+        )
+    else:
+        # Mid to Late stage
+        alpha = (slider_value - 0.66) / 0.34
+        return (
+            0.4 - 0.2 * alpha,    # darken: 0.4 → 0.2
+            int(25 + 26 * alpha) | 1,  # kernel: 25 → 51
+            8 + 7 * alpha,         # sigma: 8 → 15
+            0.9 - 0.4 * alpha      # radius_scale: 0.9 → 0.5
+        )
+
+def create_compression_maps(rows, cols, radius_scale):
+    """
+    Create mapping arrays that compress only the peripheral areas into the mask region more aggressively.
+    Central area remains undistorted; periphery is squeezed into the edge of the mask.
+    """
+    center_x, center_y = cols / 2, rows / 2
+    base_radius = min(center_x, center_y) * radius_scale  # Current mask radius
+    
+    # Threshold radius where compression begins (slightly inside mask)
+    thresh_radius = base_radius * 0.8
+    max_radius = np.sqrt(center_x**2 + center_y**2)  # Max distance in image
+    
+    # Output coordinates
+    map_x = np.tile(np.arange(cols), (rows, 1)).astype(np.float32)
+    map_y = np.tile(np.arange(rows)[:, np.newaxis], (1, cols)).astype(np.float32)
+    
+    # Compute radial distance from center for each output pixel
+    dx = map_x - center_x
+    dy = map_y - center_y
+    r_out = np.sqrt(dx**2 + dy**2)
+    
+    # Increase compression strength (max from 5.0 to 11.0)
+    compression_strength = max(1.0, 3.0 / radius_scale - 1.0)
+    
+    # Input radius mapping
+    # Within threshold: identity mapping (no distortion)
+    # Beyond threshold: compress periphery into the mask edge more aggressively
+    r_in = np.where(
+        r_out <= thresh_radius,
+        r_out,  # No distortion in central area
+        thresh_radius + (r_out - thresh_radius) * compression_strength  # Compress periphery
+    )
+    
+    # Avoid division by zero and handle scaling
+    scale = np.where(r_out > 0, r_in / r_out, 1.0)
+    map_x = center_x + dx * scale
+    map_y = center_y + dy * scale
+    
+    return map_x, map_y
+
+def main():
+    # Initialize Pygame
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+    screen_w, screen_h = pygame.display.Info().current_w, pygame.display.Info().current_h
+    
+    # Initialize webcam
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+    
+    # Set webcam resolution to 720p
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    
+    # Capture a sample frame to determine mask size and center
+    ret, sample_frame = cap.read()
+    if not ret:
+        print("Failed to capture frame for mask creation.")
+        cap.release()
+        pygame.quit()
+        return
+    
+    # Get frame dimensions and center
+    rows, cols = sample_frame.shape[:2]
+    
+    # Initial parameters
+    initial_params = get_interpolated_params(0)
+    current_mask = create_fixed_shape_mask(sample_frame.shape[:2], initial_params[3])
+    
+    # Scrollbar setup
+    scroll_pos = 0
+    max_scroll = screen_w - THUMB_WIDTH
+    dragging = False
+    
+    try:
+        while True:
+            start_time = time.time()
+            
+            # Process events
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                    raise KeyboardInterrupt
+                
+                # Handle scrollbar drag
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    if screen_h - SCROLLBAR_HEIGHT <= event.pos[1] <= screen_h:
+                        dragging = True
+                if event.type == pygame.MOUSEBUTTONUP:
+                    dragging = False
+                if event.type == pygame.MOUSEMOTION and dragging:
+                    scroll_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_scroll))
+            
+            # Calculate parameters based on scroll position
+            slider_value = scroll_pos / max_scroll
+            darken, kernel, sigma, radius_scale = get_interpolated_params(slider_value)
+            
+            # Update mask with current radius_scale (fixed shape)
+            current_mask = create_fixed_shape_mask(sample_frame.shape[:2], radius_scale)
+            
+            # Create compression maps for peripheral compression
+            map_x, map_y = create_compression_maps(rows, cols, radius_scale)
+            
+            # Capture and process frame
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            frame = cv2.resize(frame, (1280, 720))
+            
+            # Apply compression effect
+            remapped_frame = cv2.remap(frame, map_x, map_y, cv2.INTER_LINEAR, 
+                                     borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+            
+            # Compute brightness after compression
+            avg_brightness = np.mean(remapped_frame[:, :, 1])
+            
+            # Apply night blindness effects in low light
+            if avg_brightness < 100:
+                remapped_frame = (remapped_frame * darken).clip(0, 255).astype(np.uint8)
+                remapped_frame = cv2.GaussianBlur(remapped_frame, (kernel, kernel), sigma)
+            
+            # Apply tunnel vision
+            processed = apply_tunnel_vision(remapped_frame, current_mask)
+            
+            # Convert for Pygame display
+            rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
+            rgb = cv2.resize(rgb, (screen_w, screen_h))
+            surf = pygame.surfarray.make_surface(np.rot90(rgb))
+            screen.blit(surf, (0, 0))
+            
+            # Draw scrollbar
+            pygame.draw.rect(screen, SCROLLBAR_COLOR, (0, screen_h - SCROLLBAR_HEIGHT, screen_w, SCROLLBAR_HEIGHT))
+            pygame.draw.rect(screen, THUMB_COLOR, (scroll_pos, screen_h - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+            
+            pygame.display.flip()
+            print(f"FPS: {1 / (time.time() - start_time):.1f}", end='\r')
+    
+    except KeyboardInterrupt:
+        print("\nExiting simulation.")
+    
+    finally:
+        cap.release()
+        pygame.quit()
+
+if __name__ == "__main__":
+    main()
