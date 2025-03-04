@@ -1,109 +1,124 @@
 import cv2
 import numpy as np
-import time
 import pygame
-from pygame.locals import *
+from threading import Thread, Event
+from queue import Queue
 
-# Enable GPU acceleration in OpenCV
-cv2.setUseOptimized(True)
-cv2.ocl.setUseOpenCL(True)
+# Slider settings
+SLIDER_HEIGHT = 20
+SLIDER_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+THUMB_WIDTH = 40
 
-def apply_glare(image, mask, glare_intensity=150.0):
-    """Apply glare effect by blending the original image with the mask."""
-    return cv2.addWeighted(image, 1, mask, glare_intensity / 255.0, 0)
-
-def separable_gaussian_blur(image, kernel_size, sigma):
-    """Applies separable Gaussian blur to the input image."""
-    gaussian_1d = cv2.getGaussianKernel(kernel_size, sigma)
-    return cv2.sepFilter2D(image, -1, gaussian_1d, gaussian_1d.T)
-
-def create_stargardt_mask(shape, intensity=0.0):
-    """Create an irregular central vision loss mask that increases in size."""
-    rows, cols = shape
+def create_stargardt_mask(shape, severity):
+    """Generate a progressive black spot effect for Stargardt disease."""
+    rows, cols = shape[:2]
+    
+    # Define center
     center_x, center_y = cols // 2, rows // 2
-    mask = np.zeros((rows, cols), dtype=np.float32)
     
-    # Ensure minimum values to prevent errors
-    min_radius = 20
-    max_radius = max(int(300 * intensity), min_radius)  
-    min_irregularity = 5
-    irregularity = max(int(50 * intensity), min_irregularity)
+    # Generate a distance map
+    y, x = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
+    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
     
-    for _ in range(30):  
-        offset_x = np.random.randint(-irregularity, irregularity + 1)
-        offset_y = np.random.randint(-irregularity, irregularity + 1)
-        radius = np.random.randint(max_radius // 2, max_radius + 1)
-        cv2.circle(mask, (center_x + offset_x, center_y + offset_y), radius, 1, -1)
+    # Control the spot growth
+    min_radius = 1
+    max_radius = min(rows, cols) // 3  # Maximum radius of black spot
+    current_radius = int(min_radius + severity * (max_radius - min_radius))
     
-    blurred_mask = separable_gaussian_blur(mask, kernel_size=51, sigma=20)
-    return blurred_mask
+    mask = np.zeros_like(distance, dtype=np.float32)
+    
+    # Apply full black inside the central region
+    mask[distance <= current_radius] = 1
+    
+    # Gradual fading effect outward
+    fade_start = current_radius
+    fade_end = int(current_radius * 1.3)  # Slightly larger for gradual blur
+    fading_region = (distance > fade_start) & (distance <= fade_end)
+    mask[fading_region] = 1 - (distance[fading_region] - fade_start) / (fade_end - fade_start)
+    
+    return cv2.GaussianBlur(mask, (35, 35), 15)
 
-def process_frame(frame, stargardt_mask):
-    """Applies glare and Stargardt simulation using a static mask."""
-    faded_spot = (frame * (1 - stargardt_mask[..., np.newaxis])).astype(np.uint8)
-    return faded_spot
+def apply_stargardt_effect(frame, severity):
+    """Apply the black central spot with smooth progression."""
+    if severity == 0:
+        return frame  # No effect when severity is zero
+    
+    mask = create_stargardt_mask(frame.shape, severity)
+    return (frame * (1 - mask[..., np.newaxis])).astype(np.uint8)
 
-def simulate_realtime_processing():
-    """Main processing loop with Pygame fullscreen display."""
+def display_frame_with_slider(frame, screen, slider_pos, max_slider_pos):
+    """Render the frame with the slider overlay."""
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame_surface = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+    screen.blit(frame_surface, (0, 0))
+    
+    # Draw slider bar
+    pygame.draw.rect(screen, SLIDER_COLOR, (0, screen.get_height() - SLIDER_HEIGHT, screen.get_width(), SLIDER_HEIGHT))
+    pygame.draw.rect(screen, THUMB_COLOR, (slider_pos, screen.get_height() - SLIDER_HEIGHT, THUMB_WIDTH, SLIDER_HEIGHT))
+    
+    pygame.display.flip()
+
+def video_reader(cap, frame_queue, stop_event):
+    """Capture video frames asynchronously."""
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            stop_event.set()
+            break
+        frame_queue.put(frame)
+
+def video_processor(frame_queue, stop_event, screen):
+    """Process frames and apply effects dynamically."""
+    slider_pos = 0
+    max_slider_pos = screen.get_width() - THUMB_WIDTH
+    dragging = False
+    
+    while not stop_event.is_set() or not frame_queue.empty():
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                stop_event.set()
+                break
+            elif event.type == pygame.MOUSEBUTTONDOWN and screen.get_height() - SLIDER_HEIGHT <= event.pos[1]:
+                dragging = True
+            elif event.type == pygame.MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == pygame.MOUSEMOTION and dragging:
+                slider_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_slider_pos))
+
+        if not frame_queue.empty():
+            frame = frame_queue.get()
+            severity = slider_pos / max_slider_pos
+            
+            # Apply effect with gradual appearance
+            processed_frame = apply_stargardt_effect(frame, severity)
+            display_frame_with_slider(processed_frame, screen, slider_pos, max_slider_pos)
+
+def realtime_video_processing():
+    """Main function to start video processing with optimizations."""
     cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)  
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     if not cap.isOpened():
         print("Failed to open webcam.")
         return
-    
+
     pygame.init()
-    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
-    screen_w = pygame.display.Info().current_w
-    screen_h = pygame.display.Info().current_h
-    
-    slider_x = 50
-    slider_y = screen_h - 50
-    slider_width = screen_w - 100
-    slider_height = 20
-    slider_pos = 0  # Initial position (0% intensity)
-    
+    screen = pygame.display.set_mode((1280, 720), pygame.FULLSCREEN)
+    pygame.display.set_caption("Progressive Stargardt Simulation")
+
+    frame_queue = Queue(maxsize=5)  # Small queue to reduce lag
+    stop_event = Event()
+
+    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
+    reader_thread.start()
+
     try:
-        while True:
-            start_time = time.time()
-            ret, frame = cap.read()
-            if not ret:
-                print("Failed to capture frame.")
-                break
-            
-            intensity = slider_pos / slider_width
-            stargardt_mask = create_stargardt_mask(frame.shape[:2], intensity)
-            processed_frame = process_frame(frame, stargardt_mask)
-            
-            resized_frame = cv2.resize(processed_frame, (screen_w, screen_h))
-            rgb_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
-            pygame_frame = pygame.surfarray.make_surface(np.rot90(rgb_frame))
-            screen.blit(pygame_frame, (0, 0))
-            
-            pygame.draw.rect(screen, (255, 255, 255), (slider_x, slider_y, slider_width, slider_height), 2)
-            pygame.draw.rect(screen, (255, 0, 0), (slider_x, slider_y, slider_pos, slider_height))
-            pygame.display.flip()
-            
-            fps = 1 / (time.time() - start_time)
-            print(f"FPS: {fps:.1f}", end='\r')
-            
-            for event in pygame.event.get():
-                if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
-                    raise KeyboardInterrupt
-                elif event.type == MOUSEBUTTONDOWN:
-                    if slider_x <= event.pos[0] <= slider_x + slider_width and slider_y <= event.pos[1] <= slider_y + slider_height:
-                        slider_pos = event.pos[0] - slider_x
-                elif event.type == MOUSEMOTION:
-                    if event.buttons[0]:
-                        if slider_x <= event.pos[0] <= slider_x + slider_width:
-                            slider_pos = event.pos[0] - slider_x
-    
-    except KeyboardInterrupt:
-        print("\nExiting simulation.")
-    
+        video_processor(frame_queue, stop_event, screen)
     finally:
+        stop_event.set()
+        reader_thread.join()
         cap.release()
         pygame.quit()
 
-if __name__ == "__main__":
-    simulate_realtime_processing()
+realtime_video_processing()
