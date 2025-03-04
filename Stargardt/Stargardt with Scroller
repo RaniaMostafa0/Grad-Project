@@ -68,18 +68,20 @@ def process_frame(frame, stargardt_mask):
 
 def simulate_realtime_processing():
     """Main processing loop with Pygame fullscreen display."""
+    # Initialize webcam
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+    
     # Initialize Pygame
     pygame.init()
     screen = pygame.display.set_mode((0, 0), FULLSCREEN)
     pygame.display.set_caption('Stargardt Simulation')
     screen_w = pygame.display.Info().current_w
     screen_h = pygame.display.Info().current_h
-    
-    # Initialize webcam
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Failed to open webcam.")
-        return
     
     # Create initial Stargardt mask
     ret, sample_frame = cap.read()
