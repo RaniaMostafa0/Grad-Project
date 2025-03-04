@@ -1,0 +1,84 @@
+import cv2
+import numpy as np
+import time
+from threading import Thread, Event
+from queue import Queue
+from PIL import Image
+from IPython.display import display, clear_output
+
+def apply_central_blur(image):
+    h, w = image.shape[:2]
+    center_x, center_y = w // 2, h // 2
+    y, x = np.ogrid[:h, :w]
+    distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    blur_mask = np.exp(-(distance_from_center ** 2) / (2 * (w // 3) ** 2))
+    blur_mask = (blur_mask * 255).astype(np.uint8)
+    
+    mild_blur = cv2.GaussianBlur(image, (21, 21), 0)  # Reduced blur intensity
+    mask_3d = cv2.merge([blur_mask] * 3) / 255.0
+    
+    return cv2.convertScaleAbs(image * (1 - mask_3d) + mild_blur * mask_3d)
+    
+    return cv2.convertScaleAbs(image * (1 - mask_3d) + heavy_blur * mask_3d)
+
+def process_frame(frame):
+    flipped_frame = cv2.flip(frame, 1)
+    return apply_central_blur(flipped_frame)
+
+def display_frame_in_notebook(frame, max_width=1280, max_height=720):
+    height, width = frame.shape[:2]
+    scale = min(max_width / width, max_height / height)
+    new_width, new_height = int(width * scale), int(height * scale)
+    
+    resized_frame = cv2.resize(frame, (new_width, new_height))
+    frame_rgb = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(frame_rgb)
+    
+    clear_output(wait=True)
+    display(pil_image)
+
+def video_reader(cap, frame_queue, stop_event):
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            stop_event.set()
+            break
+        
+        while not frame_queue.empty():
+            frame_queue.get_nowait()
+        
+        frame_queue.put(frame)
+
+def video_processor(frame_queue, stop_event, max_width=1280, max_height=720):
+    try:
+        while not stop_event.is_set():
+            if not frame_queue.empty():
+                frame = frame_queue.get()
+                processed_frame = process_frame(frame)
+                display_frame_in_notebook(processed_frame, max_width, max_height)
+    except KeyboardInterrupt:
+        stop_event.set()
+
+def realtime_video_processing():
+    cap = cv2.VideoCapture(1)
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+    
+    frame_queue = Queue(maxsize=1)
+    stop_event = Event()
+    
+    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
+    reader_thread.start()
+    
+    try:
+        video_processor(frame_queue, stop_event)
+    except KeyboardInterrupt:
+        print("\nExiting real-time video processing.")
+    finally:
+        stop_event.set()
+        reader_thread.join()
+        cap.release()
+
+# Run real-time processing
+realtime_video_processing()
