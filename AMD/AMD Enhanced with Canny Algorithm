@@ -120,13 +120,22 @@ def main():
             spot_size = 5 + late_progress * 175
             fade_area = 500 - late_progress * 310
         
-        # Generate edges from original frame
+        # Generate edges with larger center mask
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray, 40, 85)
         kernel = np.ones((3, 3), np.uint8)
         dilated_edges = cv2.dilate(edges, kernel)
-        edge_overlay = cv2.cvtColor(dilated_edges, cv2.COLOR_GRAY2BGR)
-        edge_overlay[dilated_edges == 255] = [0, 0, 255]  # Red edges
+        
+        # Create center vision mask (30% radius)
+        h, w = gray.shape
+        center_mask = np.zeros((h, w), dtype=np.uint8)
+        center_radius = int(min(h, w) * 0.30)  # Increased to 30%
+        cv2.circle(center_mask, (w//2, h//2), center_radius, 255, -1)
+        
+        # Apply mask to edges
+        masked_edges = cv2.bitwise_and(dilated_edges, dilated_edges, mask=center_mask)
+        edge_overlay = cv2.cvtColor(masked_edges, cv2.COLOR_GRAY2BGR)
+        edge_overlay[masked_edges == 255] = [0, 0, 255]  # Red edges
 
         # Apply blur effect
         sigma = blur_strength * (frame.shape[1] // 4)
@@ -145,8 +154,8 @@ def main():
             processed = amd_state.apply_distortion(faded, frame.shape[1]//2, 
                                                 frame.shape[0]//2, int(spot_size + fade_area + 50))
         
-        # Conditional edge overlay based on disease progression
-        if progression <= 0.66:  # Only show edges in first two stages
+        # Conditional edge overlay
+        if progression <= 0.66:
             processed = cv2.addWeighted(processed, 0.8, edge_overlay, 0.2, 0)
         
         # Convert to Pygame surface
