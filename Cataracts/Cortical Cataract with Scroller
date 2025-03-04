@@ -11,26 +11,21 @@ SLIDER_COLOR = (100, 100, 100)
 THUMB_COLOR = (200, 200, 200)
 THUMB_WIDTH = 40
 
-def apply_glare_and_halo(image, mask, halo_intensity=0.7, glare_intensity=0.5, glare_blur=11):
-    mask_3channel = cv2.merge([mask, mask, mask])
-    halo_effect = cv2.GaussianBlur(mask_3channel, (glare_blur, glare_blur), 0)
-    glare_halo = cv2.addWeighted(image, 1, halo_effect, halo_intensity, 0)
-    glare_overlay = np.full_like(image, (255, 255, 255), dtype=np.uint8)
-    glare_effect = cv2.addWeighted(image, 1 - glare_intensity, glare_overlay, glare_intensity, 0)
-    final_image = cv2.addWeighted(glare_halo, 1, glare_effect, 0.5, 0)
-    return final_image
-
-def decrease_contrast(image, factor=0.5):
-    gray_mean = np.mean(image, dtype=np.float32)
-    blended = cv2.addWeighted(image, factor, np.full_like(image, gray_mean, dtype=np.uint8), 1 - factor, 0)
-    return blended
+def apply_blur_and_haze(image, intensity):
+    max_blur = 25  # Maximum blur kernel size
+    blur_amount = int(1 + intensity * max_blur)
+    if blur_amount % 2 == 0:
+        blur_amount += 1  # Ensure odd kernel size for GaussianBlur
+    blurred_image = cv2.GaussianBlur(image, (blur_amount, blur_amount), 0)
+    
+    # Create a hazy overlay
+    haze_overlay = np.full_like(image, (200, 200, 200), dtype=np.uint8)
+    hazy_frame = cv2.addWeighted(blurred_image, 1 - intensity * 0.7, haze_overlay, intensity * 0.7, 0)
+    return hazy_frame
 
 def process_frame(frame, intensity):
-    gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, bright_mask = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY)
-    glare_halo = apply_glare_and_halo(frame, bright_mask, halo_intensity=intensity, glare_intensity=intensity)
-    final_frame = decrease_contrast(glare_halo, factor=1 - intensity)
-    return final_frame
+    processed_frame = apply_blur_and_haze(frame, intensity)
+    return processed_frame
 
 def display_frame_with_pygame(frame, screen, slider_pos, max_slider_pos):
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
