@@ -1,0 +1,116 @@
+import cv2
+import numpy as np
+import time
+from threading import Thread, Event
+from queue import Queue
+from PIL import Image
+from IPython.display import display, clear_output
+
+def apply_mild_contrast_reduction(image, factor=0.5):
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = cv2.addWeighted(l, factor, np.full_like(l, np.mean(l), dtype=np.uint8), 1 - factor, 0)
+    reduced_lab = cv2.merge((l, a, b))
+    reduced_contrast = cv2.cvtColor(reduced_lab, cv2.COLOR_LAB2BGR)
+    return reduced_contrast
+
+def apply_mild_blur(image, kernel_size=(9, 9)):
+    return cv2.GaussianBlur(image, kernel_size, 0)
+
+def separable_gaussian_blur(image, kernel_size=101, sigma=20):
+    k = cv2.getGaussianKernel(kernel_size, sigma)
+    blurred = cv2.filter2D(image, -1, k)  # Blur in X direction
+    blurred = cv2.filter2D(blurred, -1, k.T)  # Blur in Y direction
+    return blurred
+
+def generate_spot_positions(h, w, num_spots=18):
+    positions = []
+    for _ in range(num_spots):
+        while True:
+            center_x = np.random.randint(0, w)
+            center_y = np.random.randint(0, h)
+            base_radius_x = np.random.randint(10, 40)
+            base_radius_y = np.random.randint(20, 50)
+            transparency = np.random.uniform(0.6, 0.8)
+            overlap = any(abs(center_x - px) < (base_radius_x + rx) and abs(center_y - py) < (base_radius_y + ry) for px, py, rx, ry, _ in positions)
+            if not overlap:
+                positions.append((center_x, center_y, base_radius_x, base_radius_y, transparency))
+                break
+    return positions
+
+def create_static_mask(h, w, spot_positions):
+    mask = np.zeros((h, w), dtype=np.float32)
+    for (cx, cy, rx, ry, transparency) in spot_positions:
+        y, x = np.ogrid[:h, :w]
+        distance = np.sqrt(((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2)
+        mask[distance < 1] = np.maximum(mask[distance < 1], transparency)
+        transition = (distance >= 1) & (distance < 2)
+        mask[transition] = np.maximum(mask[transition], transparency * (1 - ((distance[transition] - 1) / 1)))
+    return separable_gaussian_blur(np.clip(mask, 0, 1))
+
+def process_frame(frame, inverse_mask):
+    flipped_frame = cv2.flip(frame, 1)
+    contrast_reduced = apply_mild_contrast_reduction(flipped_frame)
+    blurred_frame = apply_mild_blur(contrast_reduced)
+    faded_spots = blurred_frame.astype(np.float32) * inverse_mask[..., np.newaxis]
+    return faded_spots.astype(np.uint8)
+
+def display_frame_in_notebook(frame, max_width=1280, max_height=720):
+    height, width = frame.shape[:2]
+    scale = min(max_width / width, max_height / height)
+    new_width, new_height = int(width * scale), int(height * scale)
+    resized_frame = cv2.resize(frame, (new_width, new_height))
+    frame_rgb = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(frame_rgb)
+    clear_output(wait=True)
+    display(pil_image)
+
+def video_reader(cap, frame_queue, stop_event):
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            stop_event.set()
+            break
+        while not frame_queue.empty():
+            frame_queue.get_nowait()
+        frame_queue.put(frame)
+
+def video_processor(frame_queue, stop_event, inverse_mask, max_width=1280, max_height=720):
+    try:
+        while not stop_event.is_set():
+            if not frame_queue.empty():
+                frame = frame_queue.get()
+                processed_frame = process_frame(frame, inverse_mask)
+                display_frame_in_notebook(processed_frame, max_width, max_height)
+    except KeyboardInterrupt:
+        stop_event.set()
+
+def realtime_video_processing():
+    cap = cv2.VideoCapture(1)
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to grab initial frame.")
+        cap.release()
+        return
+    h, w = frame.shape[:2]
+    spot_positions = generate_spot_positions(h, w)
+    mask = create_static_mask(h, w, spot_positions)
+    inverse_mask = (1 - mask).astype(np.float32)
+    frame_queue = Queue(maxsize=1)
+    stop_event = Event()
+    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
+    reader_thread.start()
+    try:
+        video_processor(frame_queue, stop_event, inverse_mask)
+    except KeyboardInterrupt:
+        print("\nExiting real-time video processing.")
+    finally:
+        stop_event.set()
+        reader_thread.join()
+        cap.release()
+
+# Run real-time processing
+realtime_video_processing()
