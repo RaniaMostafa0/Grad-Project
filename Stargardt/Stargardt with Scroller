@@ -1,124 +1,161 @@
 import cv2
 import numpy as np
+import time
 import pygame
-from threading import Thread, Event
-from queue import Queue
+from pygame.locals import *
 
-# Slider settings
-SLIDER_HEIGHT = 20
-SLIDER_COLOR = (100, 100, 100)
+# Enable GPU acceleration if available
+cv2.setUseOptimized(True)
+cv2.ocl.setUseOpenCL(True)
+
+# Scrollbar parameters
+SCROLLBAR_HEIGHT = 20
+SCROLLBAR_COLOR = (100, 100, 100)
 THUMB_COLOR = (200, 200, 200)
 THUMB_WIDTH = 40
 
-def create_stargardt_mask(shape, severity):
-    """Generate a progressive black spot effect for Stargardt disease."""
-    rows, cols = shape[:2]
-    
-    # Define center
+# Stargardt Simulation Functions
+def apply_glare(image, mask, glare_intensity=150.0):
+    return cv2.addWeighted(image, 1, mask, glare_intensity / 255.0, 0)
+
+def separable_gaussian_blur(image, kernel_size, sigma):
+    gaussian_1d = cv2.getGaussianKernel(kernel_size, sigma)
+    return cv2.sepFilter2D(image, -1, gaussian_1d, gaussian_1d.T)
+
+def create_stargardt_mask(shape, progression, time_factor):
+    rows, cols = shape
     center_x, center_y = cols // 2, rows // 2
-    
-    # Generate a distance map
     y, x = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
     distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
     
-    # Control the spot growth
-    min_radius = 1
-    max_radius = min(rows, cols) // 3  # Maximum radius of black spot
-    current_radius = int(min_radius + severity * (max_radius - min_radius))
+    # Combine slider progression and time factor (0 to 1)
+    total_progression = min(progression + time_factor, 1.0)  # Cap at 1.0
+    
+    # Scale radii with total progression
+    inner_radius = 330 * total_progression
+    outer_radius = 360 * total_progression
     
     mask = np.zeros_like(distance, dtype=np.float32)
+    mask[distance <= inner_radius] = 1
+    fading_region = (distance > inner_radius) & (distance <= outer_radius)
+    mask[fading_region] = 1 - (distance[fading_region] - inner_radius) / (outer_radius - inner_radius)
     
-    # Apply full black inside the central region
-    mask[distance <= current_radius] = 1
+    # Add random extensions (scaled with total progression)
+    num_extensions = int(120 * total_progression)
+    max_extension_length = 45 * total_progression
+    for _ in range(num_extensions):
+        angle = np.random.uniform(0, 2 * np.pi)
+        extension_length = np.random.uniform(inner_radius, inner_radius + max_extension_length)
+        extension_x = int(center_x + extension_length * np.cos(angle))
+        extension_y = int(center_y + extension_length * np.sin(angle))
+        cv2.circle(mask, (extension_x, extension_y), radius=int(10 * total_progression), color=1, thickness=-1)
     
-    # Gradual fading effect outward
-    fade_start = current_radius
-    fade_end = int(current_radius * 1.3)  # Slightly larger for gradual blur
-    fading_region = (distance > fade_start) & (distance <= fade_end)
-    mask[fading_region] = 1 - (distance[fading_region] - fade_start) / (fade_end - fade_start)
+    # Adjust smoothing based on total progression
+    smoothed_mask = separable_gaussian_blur(mask, kernel_size=61, sigma=30)
+    block_size = 10
+    pixelated_mask = cv2.resize(smoothed_mask, (cols // block_size, rows // block_size), 
+                              interpolation=cv2.INTER_AREA)
+    pixelated_mask = cv2.resize(pixelated_mask, (cols, rows), interpolation=cv2.INTER_NEAREST)
+    final_mask = separable_gaussian_blur(pixelated_mask, kernel_size=51, sigma=20)
     
-    return cv2.GaussianBlur(mask, (35, 35), 15)
+    return final_mask
 
-def apply_stargardt_effect(frame, severity):
-    """Apply the black central spot with smooth progression."""
-    if severity == 0:
-        return frame  # No effect when severity is zero
+def process_frame(frame, stargardt_mask, progression, time_factor):
+    gray_image = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, bright_areas = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY)
+    bright_mask = cv2.merge([bright_areas, bright_areas, bright_areas])
     
-    mask = create_stargardt_mask(frame.shape, severity)
-    return (frame * (1 - mask[..., np.newaxis])).astype(np.uint8)
-
-def display_frame_with_slider(frame, screen, slider_pos, max_slider_pos):
-    """Render the frame with the slider overlay."""
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame_surface = pygame.surfarray.make_surface(np.rot90(frame_rgb))
-    screen.blit(frame_surface, (0, 0))
+    # Combine progression and time factor for glare
+    total_progression = min(progression + time_factor, 1.0)
+    glare_image = apply_glare(frame, bright_mask, glare_intensity=150.0 * total_progression)
+    final_image_with_glare = cv2.addWeighted(frame, 1, glare_image, 0.4 * total_progression, 0)
     
-    # Draw slider bar
-    pygame.draw.rect(screen, SLIDER_COLOR, (0, screen.get_height() - SLIDER_HEIGHT, screen.get_width(), SLIDER_HEIGHT))
-    pygame.draw.rect(screen, THUMB_COLOR, (slider_pos, screen.get_height() - SLIDER_HEIGHT, THUMB_WIDTH, SLIDER_HEIGHT))
-    
-    pygame.display.flip()
+    # Apply Stargardt mask
+    faded_spot = (final_image_with_glare * (1 - stargardt_mask[..., np.newaxis])).astype(np.uint8)
+    return faded_spot
 
-def video_reader(cap, frame_queue, stop_event):
-    """Capture video frames asynchronously."""
-    while not stop_event.is_set():
-        ret, frame = cap.read()
-        if not ret:
-            stop_event.set()
-            break
-        frame_queue.put(frame)
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
+    screen_info = pygame.display.Info()
+    screen_w, screen_h = screen_info.current_w, screen_info.current_h
 
-def video_processor(frame_queue, stop_event, screen):
-    """Process frames and apply effects dynamically."""
-    slider_pos = 0
-    max_slider_pos = screen.get_width() - THUMB_WIDTH
-    dragging = False
-    
-    while not stop_event.is_set() or not frame_queue.empty():
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
-                stop_event.set()
-                break
-            elif event.type == pygame.MOUSEBUTTONDOWN and screen.get_height() - SLIDER_HEIGHT <= event.pos[1]:
-                dragging = True
-            elif event.type == pygame.MOUSEBUTTONUP:
-                dragging = False
-            elif event.type == pygame.MOUSEMOTION and dragging:
-                slider_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_slider_pos))
-
-        if not frame_queue.empty():
-            frame = frame_queue.get()
-            severity = slider_pos / max_slider_pos
-            
-            # Apply effect with gradual appearance
-            processed_frame = apply_stargardt_effect(frame, severity)
-            display_frame_with_slider(processed_frame, screen, slider_pos, max_slider_pos)
-
-def realtime_video_processing():
-    """Main function to start video processing with optimizations."""
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)  
+    cap = cv2.VideoCapture(0)  # Use 0 for default webcam
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
     if not cap.isOpened():
         print("Failed to open webcam.")
+        pygame.quit()
         return
 
-    pygame.init()
-    screen = pygame.display.set_mode((1280, 720), pygame.FULLSCREEN)
-    pygame.display.set_caption("Progressive Stargardt Simulation")
+    scroll_pos = 0
+    max_scroll = screen_w - THUMB_WIDTH
+    dragging = False
 
-    frame_queue = Queue(maxsize=5)  # Small queue to reduce lag
-    stop_event = Event()
-
-    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
-    reader_thread.start()
-
-    try:
-        video_processor(frame_queue, stop_event, screen)
-    finally:
-        stop_event.set()
-        reader_thread.join()
+    # Get initial frame for mask shape
+    ret, sample_frame = cap.read()
+    if not ret:
+        print("Failed to capture initial frame.")
         cap.release()
         pygame.quit()
+        return
 
-realtime_video_processing()
+    # Time-based progression
+    start_time = time.time()
+    max_time = 60  # Time in seconds to reach maximum size (adjust as needed)
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Calculate slider progression (0 to 1)
+        slider_progression = scroll_pos / max_scroll
+        
+        # Calculate time-based progression (0 to 1)
+        elapsed_time = time.time() - start_time
+        time_factor = min(elapsed_time / max_time, 1.0)  # Linear increase up to 1.0
+        
+        # Generate mask and process frame
+        if slider_progression <= 0.0 and time_factor <= 0.0:
+            processed = frame  # No effect at start
+        else:
+            stargardt_mask = create_stargardt_mask(sample_frame.shape[:2], slider_progression, time_factor)
+            processed = process_frame(frame, stargardt_mask, slider_progression, time_factor)
+
+        # Convert to Pygame surface
+        rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
+        rgb = cv2.resize(rgb, (screen_w, screen_h))
+        surf = pygame.surfarray.make_surface(np.rot90(rgb))
+
+        # Draw scrollbar
+        pygame.draw.rect(surf, SCROLLBAR_COLOR, (0, screen_h - SCROLLBAR_HEIGHT, screen_w, SCROLLBAR_HEIGHT))
+        pygame.draw.rect(surf, THUMB_COLOR, (scroll_pos, screen_h - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+
+        # Update display
+        screen.blit(surf, (0, 0))
+        pygame.display.flip()
+
+        # Handle events
+        for event in pygame.event.get():
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
+            elif event.type == MOUSEBUTTONDOWN:
+                if screen_h - SCROLLBAR_HEIGHT <= event.pos[1] <= screen_h:
+                    dragging = True
+            elif event.type == MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == MOUSEMOTION and dragging:
+                scroll_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_scroll))
+
+        # Maintain reasonable frame rate
+        time.sleep(1/25)
+
+    cap.release()
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
