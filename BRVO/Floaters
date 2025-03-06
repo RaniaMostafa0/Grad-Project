@@ -155,7 +155,7 @@ def main():
 
         # Convert to Pygame surface
         # Pygame expects the array in (width, height, color) order
-        surface = pygame.surfarray.make_surface(final_result.swapaxes(0, 1))
+        surface = pygame.surfarray.make_surface(np.rot90(final_result))
 
         # Blit the surface onto the window
         window.blit(surface, (0, 0))
