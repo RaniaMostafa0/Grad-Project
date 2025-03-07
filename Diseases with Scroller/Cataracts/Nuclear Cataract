@@ -1,0 +1,106 @@
+import cv2
+import numpy as np
+import pygame
+from pygame.locals import QUIT, KEYDOWN, K_ESCAPE, MOUSEBUTTONDOWN, MOUSEBUTTONUP, MOUSEMOTION
+
+# Slider settings
+SLIDER_HEIGHT = 20
+THUMB_WIDTH = 40
+SLIDER_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+
+def process_frame(frame, intensity):
+    """
+    Process a single frame to simulate nuclear cataract symptoms gradually.
+    """
+    if intensity == 0:
+        return frame  # No effect at the start
+
+    # Ensure kernel size is always odd
+    kernel_size = max(1, int(5 + intensity * 20)) | 1  
+
+    # Apply Gaussian Blur (simulating lens opacity)
+    blurred_frame = cv2.GaussianBlur(frame, (kernel_size, kernel_size), 5)
+
+    # Create a yellow overlay
+    yellow_tint = np.full_like(frame, (30, 255, 255), dtype=np.uint8)  # Yellowish tone in BGR
+
+    # Blend original and yellow overlay gradually
+    blended_frame = cv2.addWeighted(blurred_frame, 1 - intensity * 0.7, yellow_tint, intensity * 0.7, 0)
+
+    # Adjust contrast gradually
+    alpha = 1 - (0.35 * intensity)  # Decrease contrast smoothly
+    beta = 30 * intensity  # Increase brightness slightly
+    contrast_adjusted = cv2.convertScaleAbs(blended_frame, alpha=alpha, beta=beta)
+
+    return contrast_adjusted
+
+def display_frame_with_pygame(frame, screen, slider_pos, max_slider_pos):
+    """
+    Display the processed frame with a slider in a Pygame window.
+    """
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame_rgb = cv2.flip(frame_rgb, 1)  # Flip horizontally
+    screen_width, screen_height = screen.get_size()
+    resized_frame = cv2.resize(frame_rgb, (screen_width, screen_height - SLIDER_HEIGHT))
+    
+    frame_surface = pygame.surfarray.make_surface(resized_frame.transpose([1, 0, 2]))
+    screen.blit(frame_surface, (0, 0))
+    
+    pygame.draw.rect(screen, SLIDER_COLOR, (0, screen_height - SLIDER_HEIGHT, screen_width, SLIDER_HEIGHT))
+    pygame.draw.rect(screen, THUMB_COLOR, (slider_pos, screen_height - SLIDER_HEIGHT, THUMB_WIDTH, SLIDER_HEIGHT))
+    pygame.display.flip()
+
+def simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720)):
+    """
+    Simulate nuclear cataract symptoms in real-time using a webcam with a slider.
+    """
+    pygame.init()
+    display_info = pygame.display.Info()
+    screen_width, screen_height = display_info.current_w, display_info.current_h
+    screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
+    
+    cap = cv2.VideoCapture(webcam_index)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+    
+    slider_pos = 0  # Start with no symptoms
+    max_slider_pos = screen_width - THUMB_WIDTH
+    dragging = False
+    
+    clock = pygame.time.Clock()
+
+    try:
+        while True:
+            for event in pygame.event.get():
+                if event.type == QUIT:
+                    raise KeyboardInterrupt
+                elif event.type == KEYDOWN and event.key == K_ESCAPE:
+                    raise KeyboardInterrupt
+                elif event.type == MOUSEBUTTONDOWN:
+                    if screen_height - SLIDER_HEIGHT <= event.pos[1] <= screen_height:
+                        dragging = True
+                elif event.type == MOUSEBUTTONUP:
+                    dragging = False
+                elif event.type == MOUSEMOTION and dragging:
+                    slider_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_slider_pos))
+            
+            ret, frame = cap.read()
+            if not ret:
+                print("Error: Unable to read frame from webcam.")
+                break
+            
+            intensity = slider_pos / max_slider_pos  # User controls intensity
+            processed_frame = process_frame(frame, intensity)
+            display_frame_with_pygame(processed_frame, screen, slider_pos, max_slider_pos)
+            clock.tick(60)
+    
+    except KeyboardInterrupt:
+        print("\nExiting simulation.")
+    
+    finally:
+        cap.release()
+        pygame.quit()
+
+if __name__ == "__main__":
+    simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720))
