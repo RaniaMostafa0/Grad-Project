@@ -11,8 +11,11 @@ def process_frame(frame, blur_intensity):
     """
     Process a single frame by applying Gaussian blur with adjustable intensity.
     """
+    # Apply non-linear scaling to blur intensity
+    scaled_intensity = blur_intensity ** 5  # Quadratic scaling for faster progression at the end
+
     # Apply Gaussian blur with dynamic kernel size
-    kernel_size = int(blur_intensity * 30)  # Scale kernel size based on intensity
+    kernel_size = int(scaled_intensity * 30)  # Scale kernel size based on intensity
     kernel_size = max(1, kernel_size)  # Ensure kernel size is at least 1
     if kernel_size % 2 == 0:
         kernel_size += 1  # Ensure kernel size is odd
