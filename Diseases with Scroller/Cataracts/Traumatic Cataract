@@ -12,13 +12,15 @@ def process_frame(frame, blur_intensity):
     Process a single frame by applying Gaussian blur with adjustable intensity.
     """
     # Apply non-linear scaling to blur intensity
-    scaled_intensity = blur_intensity ** 5  # Quadratic scaling for faster progression at the end
+    scaled_intensity = blur_intensity ** 2  # Quadratic scaling for faster progression at the end
 
-    # Apply Gaussian blur with dynamic kernel size
-    kernel_size = int(scaled_intensity * 30)  # Scale kernel size based on intensity
+    # Calculate kernel size based on scaled intensity
+    kernel_size = int(scaled_intensity * 50)  # Scale kernel size based on intensity
     kernel_size = max(1, kernel_size)  # Ensure kernel size is at least 1
     if kernel_size % 2 == 0:
         kernel_size += 1  # Ensure kernel size is odd
+
+    # Apply Gaussian blur
     blurred_frame = cv2.GaussianBlur(frame, (kernel_size, kernel_size), 0)
     return blurred_frame
 
@@ -26,14 +28,6 @@ def process_frame(frame, blur_intensity):
 def get_scaled_dimensions(original_size, target_size):
     """
     Calculate the new size to maintain aspect ratio.
-
-    Parameters:
-    - original_size: Tuple of (width, height) of the original image.
-    - target_size: Tuple of (width, height) of the target display.
-
-    Returns:
-    - new_size: Tuple of (width, height) after scaling.
-    - position: Tuple of (x, y) position to center the image.
     """
     original_width, original_height = original_size
     target_width, target_height = target_size
@@ -67,10 +61,6 @@ def video_reader(cap, frame_queue, stop_event):
 def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
     """
     Real-time processing of video frames from a webcam using Pygame for display.
-
-    Parameters:
-    - webcam_index: Index of the webcam (default is 0).
-    - resolution: Tuple specifying the resolution (width, height).
     """
     # Initialize Pygame
     pygame.init()
@@ -102,7 +92,7 @@ def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
 
     # Track FPS
     frame_count = 0
-    total_time = 0
+    start_time = time.time()  # Initialize start_time here
 
     # Slider properties
     SCROLLBAR_HEIGHT = 20
@@ -110,9 +100,9 @@ def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
     THUMB_COLOR = (200, 200, 200)
     THUMB_WIDTH = 40
 
-    scroll_pos = 0
-    max_scroll = screen_width - THUMB_WIDTH
-    dragging = False
+    scroll_pos = 0  # Initial position of the slider thumb
+    max_scroll = screen_width - THUMB_WIDTH  # Maximum scroll position
+    dragging = False  # Whether the slider thumb is being dragged
 
     print("Press 'ESC' or close the window to stop the simulation.")
 
@@ -129,20 +119,20 @@ def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left mouse button
                         mouse_x, mouse_y = event.pos
-                        if screen_height - SCROLLBAR_HEIGHT <= mouse_y <= screen_height:
+                        # Check if the mouse is over the slider thumb
+                        if (scroll_pos <= mouse_x <= scroll_pos + THUMB_WIDTH and
+                                screen_height - SCROLLBAR_HEIGHT <= mouse_y <= screen_height):
                             dragging = True
                 elif event.type == pygame.MOUSEBUTTONUP:
                     dragging = False
                 elif event.type == pygame.MOUSEMOTION:
                     if dragging:
                         mouse_x, mouse_y = event.pos
+                        # Update the slider thumb position
                         scroll_pos = max(0, min(mouse_x - THUMB_WIDTH // 2, max_scroll))
 
             if not frame_queue.empty():
                 frame = frame_queue.get()
-
-                # Start timing
-                start_time = time.time()
 
                 # Calculate the blur intensity based on the slider position
                 blur_intensity = scroll_pos / max_scroll  # Normalized to [0, 1]
@@ -178,13 +168,12 @@ def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
                 pygame.display.flip()
 
                 # Calculate FPS
-                processing_time = time.time() - start_time
-                total_time += processing_time
                 frame_count += 1
-                fps = 1 / processing_time if processing_time > 0 else 0
-
-                # Optionally, you can display FPS on the window title
-                pygame.display.set_caption(f"Real-Time Gaussian Blur Simulation - FPS: {fps:.2f}")
+                if frame_count % 10 == 0:  # Update FPS every 10 frames
+                    current_time = time.time()
+                    elapsed_time = current_time - start_time
+                    fps = frame_count / elapsed_time
+                    pygame.display.set_caption(f"Real-Time Gaussian Blur Simulation - FPS: {fps:.2f}")
 
             # Limit to 60 FPS
             clock.tick(60)
@@ -199,10 +188,11 @@ def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
         cap.release()
         pygame.quit()
         if frame_count > 0:
-            average_processing_time = total_time / frame_count
-            overall_fps = frame_count / total_time
+            elapsed_time = time.time() - start_time
+            average_processing_time = elapsed_time / frame_count
+            overall_fps = frame_count / elapsed_time
             print(f"Total frames processed: {frame_count}")
-            print(f"Total processing time: {total_time:.4f} seconds")
+            print(f"Total processing time: {elapsed_time:.4f} seconds")
             print(f"Average processing time per frame: {average_processing_time:.4f} seconds")
             print(f"Real-time processing FPS: {overall_fps:.2f}")
 
