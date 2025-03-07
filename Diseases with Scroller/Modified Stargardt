@@ -1,0 +1,163 @@
+import cv2
+import numpy as np
+import pygame
+from pygame.locals import *
+
+# Enable GPU acceleration in OpenCV
+cv2.setUseOptimized(True)
+cv2.ocl.setUseOpenCL(True)
+
+# Scrollbar parameters
+SCROLLBAR_HEIGHT = 20
+SCROLLBAR_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+THUMB_WIDTH = 40
+
+# Stargardt Simulation Functions
+def separable_gaussian_blur(image, kernel_size, sigma):
+    """Apply a separable Gaussian blur to the image."""
+    gaussian_1d = cv2.getGaussianKernel(kernel_size, sigma)
+    return cv2.sepFilter2D(image, -1, gaussian_1d, gaussian_1d.T)
+
+def generate_static_noise_map(shape, scale=51):
+    """Generate a static noise map for organic mask variations."""
+    rows, cols = shape
+    noise_map = np.random.normal(0, 1, (rows, cols)).astype(np.float32)
+    noise_map = cv2.GaussianBlur(noise_map, (scale, scale), 0)
+    noise_map = 2 * (noise_map - noise_map.min()) / (noise_map.max() - noise_map.min()) - 1
+    return noise_map
+
+def create_stargardt_mask(shape, progression, noise_map):
+    """Create a mask simulating the Stargardt disease black spot."""
+    rows, cols = shape
+    if progression <= 0:
+        return np.zeros((rows, cols), dtype=np.float32)
+    
+    center_x, center_y = cols // 2, rows // 2
+    y, x = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
+    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    
+    base_radius = 330 * progression
+    extension_length = 75 * progression
+    local_radius = base_radius + noise_map * extension_length
+    
+    fade_width = 30 * progression
+    start_fade = local_radius - fade_width / 2
+    end_fade = local_radius + fade_width / 2
+    
+    mask = np.zeros((rows, cols), dtype=np.float32)
+    mask[distance < start_fade] = 1
+    fading_region = (distance >= start_fade) & (distance <= end_fade)
+    mask[fading_region] = 1 - (distance[fading_region] - start_fade[fading_region]) / fade_width
+    
+    block_size = 10
+    pixelated_mask = cv2.resize(mask, (cols // block_size, rows // block_size), interpolation=cv2.INTER_AREA)
+    pixelated_mask = cv2.resize(pixelated_mask, (cols, rows), interpolation=cv2.INTER_NEAREST)
+    
+    final_mask = separable_gaussian_blur(pixelated_mask, kernel_size=51, sigma=20)
+    return final_mask
+
+def create_glare_mask(frame, progression):
+    """Create a soft glare mask from bright areas in the frame."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, bright_areas = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)  # Lowered threshold to 150
+    glare_mask = cv2.GaussianBlur(bright_areas, (0, 0), sigmaX=20 * progression, sigmaY=20 * progression)
+    glare_mask = glare_mask / 255.0  # Normalize to [0,1]
+    return glare_mask
+
+def apply_glare_effect(frame, glare_mask, progression):
+    """Apply the glare effect to the frame."""
+    glare_intensity = 200.0 * progression  # Increased intensity
+    glared_frame = frame.astype(np.float32) + glare_mask[..., np.newaxis] * glare_intensity
+    glared_frame = np.clip(glared_frame, 0, 255).astype(np.uint8)
+    return glared_frame
+
+def process_frame(frame, stargardt_mask, progression):
+    """Process the frame with Stargardt effects: black spot and glare."""
+    if progression > 0:
+        glare_mask = create_glare_mask(frame, progression)
+        glared_frame = apply_glare_effect(frame, glare_mask, progression)
+    else:
+        glared_frame = frame
+    
+    if stargardt_mask is not None:
+        faded_spot = (glared_frame * (1 - stargardt_mask[..., np.newaxis])).astype(np.uint8)
+    else:
+        faded_spot = glared_frame
+    return faded_spot
+
+def main():
+    """Main function to run the Stargardt simulation with scrollbar control."""
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
+    screen_info = pygame.display.Info()
+    screen_w, screen_h = screen_info.current_w, screen_info.current_h
+
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        pygame.quit()
+        return
+
+    scroll_pos = 0
+    max_scroll = screen_w - THUMB_WIDTH
+    dragging = False
+
+    ret, sample_frame = cap.read()
+    if not ret:
+        print("Failed to capture initial frame.")
+        cap.release()
+        pygame.quit()
+        return
+
+    noise_map = generate_static_noise_map(sample_frame.shape[:2], scale=51)
+
+    last_scroll_pos = -1
+    stargardt_mask = None
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        slider_progression = scroll_pos / max_scroll
+
+        if scroll_pos != last_scroll_pos:
+            stargardt_mask = create_stargardt_mask(sample_frame.shape[:2], slider_progression, noise_map)
+            last_scroll_pos = scroll_pos
+
+        processed = process_frame(frame, stargardt_mask, slider_progression) if slider_progression > 0 else frame
+
+        rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
+        rgb = cv2.resize(rgb, (screen_w, screen_h))
+        surf = pygame.surfarray.make_surface(np.rot90(rgb))
+
+        pygame.draw.rect(surf, SCROLLBAR_COLOR, (0, screen_h - SCROLLBAR_HEIGHT, screen_w, SCROLLBAR_HEIGHT))
+        pygame.draw.rect(surf, THUMB_COLOR, (scroll_pos, screen_h - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+
+        screen.blit(surf, (0, 0))
+        pygame.display.flip()
+
+        for event in pygame.event.get():
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
+            elif event.type == MOUSEBUTTONDOWN:
+                if screen_h - SCROLLBAR_HEIGHT <= event.pos[1] <= screen_h:
+                    dragging = True
+            elif event.type == MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == MOUSEMOTION and dragging:
+                scroll_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_scroll))
+
+        pygame.time.wait(40)  # Approximately 25 FPS
+
+    cap.release()
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
