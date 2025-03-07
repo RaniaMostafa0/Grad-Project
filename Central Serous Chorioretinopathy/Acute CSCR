@@ -123,7 +123,9 @@ def process_webcam_feed():
 
     def process_frame(frame):
         nonlocal processed_frame
-        processed_frame = apply_realistic_combined_effect(frame, blur_mask, map_x, map_y, downscale_factor, scaling_factor=0.9)
+        # Flip the frame horizontally
+        flipped_frame = cv2.flip(frame, 1)
+        processed_frame = apply_realistic_combined_effect(flipped_frame, blur_mask, map_x, map_y, downscale_factor, scaling_factor=0.9)
         processing_done.set()
 
     try:
