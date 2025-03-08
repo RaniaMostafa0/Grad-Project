@@ -1,14 +1,28 @@
 import cv2
 import numpy as np
+import pygame
+from pygame.locals import *
 
-# Slider parameters
+# Scrollbar parameters
 SCROLLBAR_HEIGHT = 20
 SCROLLBAR_COLOR = (100, 100, 100)
 THUMB_COLOR = (200, 200, 200)
 THUMB_WIDTH = 40
 
-# Precompute blur mask
-def precompute_blur_mask(shape, downscale_factor=0.5, x_offset=20, y_offset=10, radius_factor=4):
+def precompute_blur_mask(shape, downscale_factor=0.5, x_offset=70, y_offset=40, radius_factor=4):
+    """
+    Precompute a Gaussian blur mask for the downscaled image.
+    
+    Args:
+        shape: Tuple of (height, width) of the original image.
+        downscale_factor: Factor to downscale the image for blur effect.
+        x_offset, y_offset: Center offset for the blur mask.
+        radius_factor: Controls the spread of the blur mask.
+    
+    Returns:
+        blur_mask: 2D numpy array representing the blur mask.
+        downscale_factor: The downscale factor used.
+    """
     h, w = int(shape[0] * downscale_factor), int(shape[1] * downscale_factor)
     center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
     y, x = np.ogrid[:h, :w]
@@ -16,8 +30,19 @@ def precompute_blur_mask(shape, downscale_factor=0.5, x_offset=20, y_offset=10, 
     blur_mask = np.exp(-(distance_from_center ** 2) / (2 * (w // radius_factor) ** 2))
     return blur_mask.astype(np.float32), downscale_factor
 
-# Precompute distortion map
-def precompute_distortion_map(shape, x_offset=20, y_offset=10, sine_frequency=4, cosine_frequency=4, strength=1.0):
+def precompute_distortion_map(shape, x_offset=70, y_offset=40, sine_frequency=4, cosine_frequency=4, strength=1.0):
+    """
+    Precompute distortion maps for remapping the image.
+    
+    Args:
+        shape: Tuple of (height, width) of the image.
+        x_offset, y_offset: Center offset for distortion.
+        sine_frequency, cosine_frequency: Frequencies for sine/cosine waves.
+        strength: Strength of the distortion effect.
+    
+    Returns:
+        map_x, map_y: 2D numpy arrays for x and y remapping coordinates.
+    """
     h, w = shape[:2]
     center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
     radius = min(h, w) // 2.5
@@ -32,17 +57,26 @@ def precompute_distortion_map(shape, x_offset=20, y_offset=10, sine_frequency=4,
     map_y = (y + distortion_y).astype(np.float32)
     return map_x, map_y
 
-# Apply effect based on progression level (0 to 2)
-def apply_progressive_effect(image, blur_mask, downscale_factor, map_x, map_y, progression):
+def apply_progressive_effect(image, progression):
+    """
+    Apply progressive Macular Pucker effects (blur and distortion) to the image.
+    
+    Args:
+        image: Input BGR image from OpenCV.
+        progression: Value between 0 and 2 controlling effect intensity.
+    
+    Returns:
+        Processed BGR image with effects applied.
+    """
     h, w = image.shape[:2]
     
-    # Interpolate parameters
-    blur_strength = np.interp(progression, [0, 2], [1.0, 1.5])  # Increase blur intensity
-    distortion_strength = np.interp(progression, [0, 2], [0.0, 1.5])  # Increase distortion
-    radius_factor = np.interp(progression, [0, 2], [4, 3.5])  # Adjust blur radius
+    # Interpolate effect parameters based on progression
+    blur_strength = np.interp(progression, [0, 2], [1.0, 1.5])  # Blur intensity
+    distortion_strength = np.interp(progression, [0, 2], [0.0, 1.5])  # Distortion strength
+    radius_factor = np.interp(progression, [0, 2], [4, 3.5])  # Blur radius adjustment
     
-    # Recompute blur mask with varying radius
-    blur_mask, _ = precompute_blur_mask(image.shape, downscale_factor, 70, 40, radius_factor)
+    # Compute blur mask
+    blur_mask, downscale_factor = precompute_blur_mask(image.shape, 0.5, 70, 40, radius_factor)
     
     # Apply distortion if progression > 0
     if progression > 0:
@@ -51,143 +85,94 @@ def apply_progressive_effect(image, blur_mask, downscale_factor, map_x, map_y, p
     else:
         distorted_image = image.copy()
 
-    # Downscale and blur
+    # Downscale and apply blur
     small_image = cv2.resize(distorted_image, None, fx=downscale_factor, fy=downscale_factor)
     small_blurred = cv2.GaussianBlur(small_image, (31, 31), blur_strength)
     
-    # Blend with mask
+    # Blend using the mask
     mask_3d = cv2.merge([blur_mask] * 3)
     blended_small = cv2.convertScaleAbs(small_image * (1 - mask_3d) + small_blurred * mask_3d)
     
     # Upscale to original size
     return cv2.resize(blended_small, (w, h))
 
-# Main function
 def main():
-    # Open webcam
+    # Initialize Pygame and set full-screen mode
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
+    screen_info = pygame.display.Info()
+    screen_w, screen_h = screen_info.current_w, screen_info.current_h
+    pygame.display.set_caption("Macular Pucker Simulation")
+    
+    # Initialize webcam
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("Failed to open webcam.")
+        print("Error: Could not open webcam.")
+        pygame.quit()
         return
     
-    # Get screen resolution
-    screen_w = 1280  # Replace with your screen width
-    screen_h = 720  # Replace with your screen height
+    # Attempt to set webcam resolution to 1280x720
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
-    # Create a full-screen window
-    cv2.namedWindow("Macular Pucker Simulation", cv2.WND_PROP_FULLSCREEN)
-    cv2.setWindowProperty("Macular Pucker Simulation", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    
-    # Initialize slider variables
+    # Scrollbar variables
     scroll_pos = 0
     max_scroll = screen_w - THUMB_WIDTH
     dragging = False
     
-    # Precompute blur mask and distortion maps
-    ret, sample_frame = cap.read()
-    if not ret:
-        print("Failed to capture frame for initialization.")
-        cap.release()
-        return
+    # Main loop
+    while True:
+        # Capture frame
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Failed to capture frame.")
+            break
+        
+        # Flip frame horizontally to correct mirroring
+        frame = cv2.flip(frame, 1)
+        
+        # Resize frame to full screen size
+        frame_resized = cv2.resize(frame, (screen_w, screen_h))
+        
+        # Calculate progression from scrollbar position (0 to 2)
+        progression = scroll_pos / max_scroll * 2
+        
+        # Apply Macular Pucker effects
+        processed_frame = apply_progressive_effect(frame_resized, progression)
+        
+        # Convert to RGB for Pygame
+        rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+        
+        # Create Pygame surface (rotate 90 degrees due to Pygame's coordinate system)
+        surf = pygame.surfarray.make_surface(np.rot90(rgb))
+        
+        # Draw scrollbar on the surface
+        pygame.draw.rect(surf, SCROLLBAR_COLOR, (0, screen_h - SCROLLBAR_HEIGHT, screen_w, SCROLLBAR_HEIGHT))
+        pygame.draw.rect(surf, THUMB_COLOR, (scroll_pos, screen_h - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+        
+        # Display the surface
+        screen.blit(surf, (0, 0))
+        pygame.display.flip()
+        
+        # Handle Pygame events
+        for event in pygame.event.get():
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
+            elif event.type == MOUSEBUTTONDOWN:
+                # Check if click is within scrollbar area
+                if screen_h - SCROLLBAR_HEIGHT <= event.pos[1] <= screen_h:
+                    dragging = True
+            elif event.type == MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == MOUSEMOTION and dragging:
+                # Update scrollbar position
+                scroll_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_scroll))
     
-    # Flip the frame horizontally to correct mirroring
-    sample_frame = cv2.flip(sample_frame, 1)
-    
-    # Resize frame to maintain aspect ratio for initial processing
-    target_height = 720
-    target_width = int(sample_frame.shape[1] * (target_height / sample_frame.shape[0]))
-    frame_resized = cv2.resize(sample_frame, (target_width, target_height))
-    
-    blur_mask, downscale_factor = precompute_blur_mask((target_height, target_width), 0.5, 70, 40)
-    map_x, map_y = precompute_distortion_map((target_height, target_width), 70, 40, 4, 4, 1.0)
-    
-    try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Failed to capture frame.")
-                break
-            
-            # Flip the frame horizontally to correct mirroring
-            frame = cv2.flip(frame, 1)
-            
-            # Resize frame to maintain aspect ratio for processing
-            frame_resized = cv2.resize(frame, (target_width, target_height))
-            
-            # Calculate progression level based on slider position
-            progression = scroll_pos / max_scroll * 2  # Scale to [0, 2]
-            
-            # Apply progressive effect
-            processed_frame = apply_progressive_effect(frame_resized, blur_mask, downscale_factor, map_x, map_y, progression)
-            
-            # Target display dimensions (full screen minus scrollbar height)
-            display_height = screen_h - SCROLLBAR_HEIGHT
-            display_width = screen_w
-            
-            # Calculate aspect ratios
-            frame_aspect = processed_frame.shape[1] / processed_frame.shape[0]  # Width / Height of the frame
-            display_aspect = display_width / display_height  # Width / Height of the display area
-            
-            # Resize the frame to match one dimension and crop the other
-            if frame_aspect > display_aspect:
-                # Frame is wider than the display: match height, crop width
-                intermediate_height = display_height
-                intermediate_width = int(display_height * frame_aspect)
-                intermediate_frame = cv2.resize(processed_frame, (intermediate_width, intermediate_height))
-                
-                # Crop the excess width (center the frame)
-                excess_width = intermediate_width - display_width
-                start_x = excess_width // 2
-                processed_frame_resized = intermediate_frame[:, start_x:start_x + display_width]
-            else:
-                # Frame is taller than the display: match width, crop height
-                intermediate_width = display_width
-                intermediate_height = int(display_width / frame_aspect)
-                intermediate_frame = cv2.resize(processed_frame, (intermediate_width, intermediate_height))
-                
-                # Crop the excess height (center the frame)
-                excess_height = intermediate_height - display_height
-                start_y = excess_height // 2
-                processed_frame_resized = intermediate_frame[start_y:start_y + display_height, :]
-            
-            # Create a blank image for the full screen
-            combined_frame = np.zeros((screen_h, screen_w, 3), dtype=np.uint8)
-            
-            # Place the processed frame directly into the combined frame
-            combined_frame[:display_height, :display_width] = processed_frame_resized
-            
-            # Create a scrollbar at the bottom
-            scrollbar = np.zeros((SCROLLBAR_HEIGHT, screen_w, 3), dtype=np.uint8)
-            cv2.rectangle(scrollbar, (0, 0), (screen_w, SCROLLBAR_HEIGHT), SCROLLBAR_COLOR, -1)
-            cv2.rectangle(scrollbar, (scroll_pos, 0), (scroll_pos + THUMB_WIDTH, SCROLLBAR_HEIGHT), THUMB_COLOR, -1)
-            
-            # Add the scrollbar to the combined frame
-            combined_frame[screen_h - SCROLLBAR_HEIGHT:, :] = scrollbar
-            
-            # Display the combined frame
-            cv2.imshow("Macular Pucker Simulation", combined_frame)
-            
-            # Handle mouse events for the slider
-            def mouse_callback(event, x, y, flags, param):
-                nonlocal scroll_pos, dragging
-                if event == cv2.EVENT_LBUTTONDOWN:
-                    if screen_h - SCROLLBAR_HEIGHT <= y <= screen_h:
-                        dragging = True
-                elif event == cv2.EVENT_LBUTTONUP:
-                    dragging = False
-                elif event == cv2.EVENT_MOUSEMOVE and dragging:
-                    scroll_pos = max(0, min(x - THUMB_WIDTH // 2, max_scroll))
-            
-            cv2.setMouseCallback("Macular Pucker Simulation", mouse_callback)
-            
-            # Exit on 'ESC' key press
-            if cv2.waitKey(1) == 27:  # 27 is the key code for ESC
-                break
-    except KeyboardInterrupt:
-        print("Exiting simulation.")
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
+    # Cleanup
+    cap.release()
+    pygame.quit()
 
 if __name__ == "__main__":
     main()
