@@ -23,13 +23,14 @@ def separable_gaussian_blur(image, kernel_size, sigma):
     """
     return cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
 
-def simulate_night_blindness(image, adjustment_level):
+def simulate_night_blindness(image, adjustment_level, progression):
     """
-    Simulate night blindness by darkening and blurring the image.
+    Simulate night blindness by darkening and blurring the image based on disease progression.
     
     Parameters:
     - image: Input image in BGR format.
     - adjustment_level: Float between 0 and 1 indicating the darkening level.
+    - progression: Float between 0 and 1 indicating the disease progression for blur strength.
     
     Returns:
     - Blurred and darkened image in uint8 format.
@@ -38,8 +39,19 @@ def simulate_night_blindness(image, adjustment_level):
     darkened_image = image * adjustment_level
     darkened_image = np.clip(darkened_image, 0, 255)
     
-    # Apply a blur to simulate difficulty seeing clearly in the dark
-    blurred_image = separable_gaussian_blur(darkened_image, 31, 10)  # Larger blur kernel for a significant blur effect
+    # Calculate sigma for blur based on progression
+    max_sigma = 10
+    sigma = progression * max_sigma
+    
+    if sigma > 0:
+        # Calculate kernel size based on sigma, ensuring it's odd and at least 3
+        kernel_size = 2 * int(3 * sigma) + 1
+        kernel_size = max(3, kernel_size)
+        # Apply Gaussian blur
+        blurred_image = separable_gaussian_blur(darkened_image, kernel_size, sigma)
+    else:
+        # No blur when progression is 0
+        blurred_image = darkened_image
     
     return blurred_image.astype(np.uint8)
 
@@ -195,10 +207,9 @@ def main():
             if avg_brightness < 100:  # Dark condition (threshold can be adjusted)
                 print("In darkness, simulating night blindness.")
                 # Adjust the adjustment level based on the slider's position
-                # Use a non-linear function to make the effect start weak and strengthen more rapidly
-                adjustment_level = 1.0 - (progression ** 2)  # Quadratic function for non-linear progression
+                adjustment_level = 1.0 - progression  # Darkening level increases as progression increases
                 adjustment_level = max(0.2, adjustment_level)  # Ensure it doesn't go below 0.2
-                processed = simulate_night_blindness(frame, adjustment_level)
+                processed = simulate_night_blindness(frame, adjustment_level, progression)
             else:
                 print("In light, normal vision.")
                 processed = frame  # No night blindness effect in bright conditions
