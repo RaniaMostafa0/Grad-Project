@@ -129,7 +129,7 @@ def main():
             break
         
         # Flip frame horizontally to correct mirroring
-        frame = cv2.flip(frame, 1)
+        #frame = cv2.flip(frame, 1)
         
         # Resize frame to full screen size
         frame_resized = cv2.resize(frame, (screen_w, screen_h))
