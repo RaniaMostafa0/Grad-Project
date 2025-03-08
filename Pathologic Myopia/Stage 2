@@ -1,0 +1,202 @@
+import cv2
+import numpy as np
+import time
+from IPython.display import display, clear_output
+from PIL import Image
+import threading
+
+# Precompute blur mask for consistent downscaling and blur region offset
+def precompute_blur_mask(shape, downscale_factor=0.5, x_offset=20, y_offset=10):
+    h, w = int(shape[0] * downscale_factor), int(shape[1] * downscale_factor)
+    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
+    y, x = np.ogrid[:h, :w]
+    distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    blur_mask = np.exp(-(distance_from_center ** 2) / (2 * (w // 6) ** 2))  # Increased blur mask intensity
+    return blur_mask.astype(np.float32), downscale_factor
+
+# Generate spot positions
+def generate_spot_positions(h, w, num_spots=18):
+    positions = []
+    for _ in range(num_spots):
+        while True:
+            center_x = np.random.randint(w // 4, 3 * w // 4)  # Restrict to central region
+            center_y = np.random.randint(h // 4, 3 * h // 4)  # Restrict to central region
+            base_radius_x = np.random.randint(10, 40)
+            base_radius_y = np.random.randint(20, 50)
+            transparency = np.random.uniform(0.6, 0.8)
+            overlap = any(abs(center_x - px) < (base_radius_x + rx) and abs(center_y - py) < (base_radius_y + ry) for px, py, rx, ry, _ in positions)
+            if not overlap:
+                positions.append((center_x, center_y, base_radius_x, base_radius_y, transparency))
+                break
+    return positions
+
+# Create static mask with spots
+def create_static_mask(h, w, spot_positions):
+    mask = np.zeros((h, w), dtype=np.float32)
+    for (cx, cy, rx, ry, transparency) in spot_positions:
+        y, x = np.ogrid[:h, :w]
+        distance = np.sqrt(((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2)
+        mask[distance < 1] = np.maximum(mask[distance < 1], transparency)
+        transition = (distance >= 1) & (distance < 2)
+        mask[transition] = np.maximum(mask[transition], transparency * (1 - ((distance[transition] - 1) / 1)))
+    return cv2.GaussianBlur(mask, (101, 101), 20)  # Smooth the mask
+
+# Apply combined distortion, blur, and spots effect
+def apply_realistic_combined_effect(image, blur_mask, downscale_factor, spot_mask, x_offset=20, y_offset=10):
+    h, w = image.shape[:2]
+    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
+    radius = min(h, w) // 2  # Larger distortion radius
+
+    # Create meshgrid for the image
+    x, y = np.meshgrid(np.arange(w), np.arange(h))
+    
+    # Calculate distance from center
+    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    
+    # Mask for pixels within the distortion radius
+    mask = distance < radius
+    
+    # Apply weaker distortion
+    fade_factor = (radius - distance) / radius  # Smooth transition from center to edge
+    fade_factor[fade_factor < 0] = 0  # Prevent negative values
+
+    amplitude_x = np.sin(2 * np.pi * (y - center_y) / h * 4) * 10  # Increased amplitude
+    amplitude_y = np.cos(2 * np.pi * (x - center_x) / w * 4) * 10  # Increased amplitude
+
+    # Distortion intensity is now stronger
+    distortion_x = amplitude_x * fade_factor
+    distortion_y = amplitude_y * fade_factor
+
+    # Apply the distortion using these dynamic values
+    map_x = (x + distortion_x).astype(np.float32)
+    map_y = (y + distortion_y).astype(np.float32)
+
+    # Distort the image using remapping
+    distorted_image = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    # Mask the distorted image to only affect the central region
+    distorted_image[~mask] = image[~mask]  # Keep original pixels outside the central region
+
+    # Downscale the image and mask for faster processing
+    small_image = cv2.resize(distorted_image, None, fx=downscale_factor, fy=downscale_factor)
+    small_blurred = cv2.GaussianBlur(small_image, (31, 31), 0)  # Increased blur kernel size
+
+    # Blend the original and blurred images using the mask
+    mask_3d = cv2.merge([blur_mask] * 3)  # Convert to 3-channel mask
+    blended_small = cv2.convertScaleAbs(
+        small_image * (1 - mask_3d) + small_blurred * mask_3d
+    )
+
+    # Upscale back to original size
+    final_image = cv2.resize(blended_small, (image.shape[1], image.shape[0]))
+
+    # Apply mild blurring and distortion to the outer regions
+    outer_mask = 1 - mask  # Invert the mask to target the outer regions
+    outer_mask_3d = cv2.merge([outer_mask] * 3)  # Convert to 3-channel mask
+
+    # Mild blur to the outer regions
+    mild_blurred = cv2.GaussianBlur(final_image, (15, 15), 0)  # Mild blur kernel size
+    final_image = cv2.convertScaleAbs(
+        final_image * (1 - outer_mask_3d) + mild_blurred * outer_mask_3d
+    )
+
+    # Mild distortion to the outer regions
+    amplitude_x_outer = np.sin(2 * np.pi * (y - center_y) / h * 2) * 5  # Mild amplitude
+    amplitude_y_outer = np.cos(2 * np.pi * (x - center_x) / w * 2) * 5  # Mild amplitude
+    distortion_x_outer = amplitude_x_outer * (1 - fade_factor)  # Apply to outer regions
+    distortion_y_outer = amplitude_y_outer * (1 - fade_factor)  # Apply to outer regions
+
+    map_x_outer = (x + distortion_x_outer).astype(np.float32)
+    map_y_outer = (y + distortion_y_outer).astype(np.float32)
+
+    # Apply mild distortion to the outer regions
+    final_image = cv2.remap(final_image, map_x_outer, map_y_outer, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+    # Add black spots to the central region
+    spot_mask_3d = cv2.merge([spot_mask] * 3)  # Convert to 3-channel mask
+    final_image = cv2.convertScaleAbs(
+        final_image * (1 - spot_mask_3d)  # Apply spots as black regions
+    )
+
+    return final_image
+
+def display_frame_in_notebook(frame):
+    """Display a frame inline in Jupyter Notebook."""
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB for PIL
+    pil_image = Image.fromarray(frame_rgb)
+    clear_output(wait=True)  # Clear the previous output
+    display(pil_image)
+
+def simulate_macular_pucker_webcam():
+    # Open the webcam (Use 1 for external, 0 for internal webcam)
+    cap = cv2.VideoCapture(1)
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+    print("Press 'Kernel Interrupt' to stop the display.")
+    
+    # Precompute the blur mask
+    ret, sample_frame = cap.read()
+    if not ret:
+        print("Failed to capture frame for initialization.")
+        cap.release()
+        return
+    
+    target_height = 720
+    target_width = int(sample_frame.shape[1] * (target_height / sample_frame.shape[0]))
+    frame_resized = cv2.resize(sample_frame, (target_width, target_height))
+    blur_mask, downscale_factor = precompute_blur_mask(frame_resized.shape, x_offset=70, y_offset=40)
+    
+    # Generate spot positions and create a static mask
+    spot_positions = generate_spot_positions(target_height, target_width)
+    spot_mask = create_static_mask(target_height, target_width, spot_positions)
+    
+    # Frame processing thread
+    processed_frame = None
+    processing_done = threading.Event()
+
+    def process_frame(frame):
+        """Background thread to apply the distortion and blur effect to the frame."""
+        nonlocal processed_frame
+        # Flip the frame horizontally
+        frame_flipped = cv2.flip(frame, 1)
+        processed_frame = apply_realistic_combined_effect(frame_flipped, blur_mask, downscale_factor, spot_mask)
+        processing_done.set()
+
+    try:
+        prev_time = time.time()
+        while True:
+            start_time = time.time()
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to capture frame.")
+                break
+            
+            # Resize frame to consistent size
+            frame_resized = cv2.resize(frame, (target_width, target_height))
+            
+            # Start processing in a separate thread (reuse the thread instead of creating new ones every frame)
+            processing_done.clear()
+            thread = threading.Thread(target=process_frame, args=(frame_resized,))
+            thread.start()
+            
+            # Display processed frame after distortion and blur if available
+            if processing_done.wait(timeout=1 / 25):  # Wait for the previous frame or timeout
+                display_frame_in_notebook(processed_frame)
+            
+            # Calculate FPS
+            end_time = time.time()
+            frame_time = end_time - start_time
+            fps = 1 / frame_time
+            print(f"FPS: {fps:.2f}")
+            
+            # Display FPS for debugging
+            if fps > 25:
+                print("Optimal FPS achieved!")
+                break
+    except KeyboardInterrupt:
+        print("Exiting simulation.")
+    cap.release()
+
+# Run the webcam simulation
+simulate_macular_pucker_webcam()
