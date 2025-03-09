@@ -1,0 +1,146 @@
+import cv2
+import numpy as np
+import pygame
+from threading import Thread, Event
+from queue import Queue
+
+# Slider parameters
+SLIDER_HEIGHT = 20
+SLIDER_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+THUMB_WIDTH = 40
+
+def precompute_blur_mask(shape, downscale_factor=0.5, x_offset=20, y_offset=-10):
+    h, w = int(shape[0] * downscale_factor), int(shape[1] * downscale_factor)
+    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
+    y, x = np.ogrid[:h, :w]
+    distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    blur_mask = np.exp(-(distance_from_center ** 2) / (2 * (w // 6) ** 2))
+    return blur_mask.astype(np.float32), downscale_factor
+
+def precompute_distortion_map(shape, intensity, x_offset=20, y_offset=-10, sine_frequency=2, cosine_frequency=2):
+    h, w = shape[:2]
+    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
+    radius = min(h, w) // 2.0
+    x, y = np.meshgrid(np.arange(w), np.arange(h))
+    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    fade_factor = np.clip((radius - distance) / radius, 0, 1)
+    distortion_strength_sin = 0.6 * intensity  # Scale with intensity
+    distortion_strength_cos = 0.8 * intensity
+    amplitude_x = np.sin(2 * np.pi * (y - center_y) / h * sine_frequency) * 10 * distortion_strength_sin
+    amplitude_y = np.cos(2 * np.pi * (x - center_x) / w * cosine_frequency) * 10 * distortion_strength_cos
+    map_x = (x + amplitude_x * fade_factor).astype(np.float32)
+    map_y = (y + amplitude_y * fade_factor).astype(np.float32)
+    return map_x, map_y
+
+def apply_central_micropsia(image, intensity, x_offset=20, y_offset=-10, radius_ratio=3.5):
+    scaling_factor = 1.0 - 0.5 * intensity  # 1.0 (no effect) to 0.5 (max effect)
+    h, w = image.shape[:2]
+    center_x, center_y = int(w // 2 + x_offset), int(h // 2 + y_offset)
+    radius = int(min(h, w) // radius_ratio)
+    x_start, x_end = max(center_x - radius, 0), min(center_x + radius, w)
+    y_start, y_end = max(center_y - radius, 0), min(center_y + radius, h)
+    central_region = image[y_start:y_end, x_start:x_end]
+    if scaling_factor == 1.0:  # No effect when intensity = 0
+        return image
+    scaled_size = (int(central_region.shape[1] * scaling_factor), int(central_region.shape[0] * scaling_factor))
+    scaled_region = cv2.resize(central_region, scaled_size, interpolation=cv2.INTER_LINEAR)
+    blended_region = central_region.copy()
+    start_x = (central_region.shape[1] - scaled_region.shape[1]) // 2
+    start_y = (central_region.shape[0] - scaled_region.shape[0]) // 2
+    blended_region[start_y:start_y + scaled_region.shape[0], start_x:start_x + scaled_region.shape[1]] = scaled_region
+    mask = np.zeros((central_region.shape[0], central_region.shape[1]), dtype=np.float32)
+    scaled_radius = int(radius * scaling_factor * 0.9)
+    cv2.circle(mask, (central_region.shape[1] // 2, central_region.shape[0] // 2), scaled_radius, 1, -1)
+    mask = cv2.GaussianBlur(mask, (71, 71), 30)
+    mask_3d = cv2.merge([mask] * 3)
+    blended_region = (central_region * (1 - mask_3d) + blended_region * mask_3d).astype(np.uint8)
+    result = image.copy()
+    result[y_start:y_end, x_start:x_end] = blended_region
+    return result
+
+def apply_realistic_combined_effect(image, blur_mask, map_x, map_y, downscale_factor, intensity):
+    h, w = image.shape[:2]
+    if intensity == 0:  # No effect when intensity = 0
+        return image
+    distorted_image = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+    distorted_micropsia = apply_central_micropsia(distorted_image, intensity, x_offset=20, y_offset=-10)
+    small_image = cv2.resize(distorted_micropsia, None, fx=downscale_factor, fy=downscale_factor)
+    blur_kernel = int(15 * intensity)  # Scale blur with intensity (0 to 15)
+    if blur_kernel % 2 == 0 and blur_kernel > 0:
+        blur_kernel += 1
+    small_blurred = cv2.GaussianBlur(small_image, (blur_kernel, blur_kernel), 0) if blur_kernel > 0 else small_image
+    mask_3d = cv2.merge([blur_mask] * 3)
+    blended_small = cv2.convertScaleAbs(small_image * (1 - mask_3d) + small_blurred * mask_3d)
+    return cv2.resize(blended_small, (image.shape[1], image.shape[0]))
+
+def display_frame_with_pygame(frame, screen, slider_pos, max_slider_pos):
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame_surface = pygame.surfarray.make_surface(frame_rgb.transpose([1, 0, 2]))
+    screen.blit(frame_surface, (0, 0))
+    pygame.draw.rect(screen, SLIDER_COLOR, (0, screen.get_height() - SLIDER_HEIGHT, screen.get_width(), SLIDER_HEIGHT))
+    pygame.draw.rect(screen, THUMB_COLOR, (slider_pos, screen.get_height() - SLIDER_HEIGHT, THUMB_WIDTH, SLIDER_HEIGHT))
+    pygame.display.flip()
+
+def video_reader(cap, frame_queue, stop_event):
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to capture frame.")
+            stop_event.set()
+            break
+        frame = cv2.flip(frame, 1)
+        frame_queue.put(frame)
+
+def video_processor(frame_queue, stop_event, screen):
+    slider_pos = 0
+    max_slider_pos = screen.get_width() - THUMB_WIDTH
+    dragging = False
+
+    # Precompute blur mask
+    target_height = 720
+    target_width = 1280
+    blur_mask, downscale_factor = precompute_blur_mask((target_height, target_width), x_offset=20, y_offset=-10)
+
+    while not stop_event.is_set() or not frame_queue.empty():
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                stop_event.set()
+                break
+            elif event.type == pygame.MOUSEBUTTONDOWN and screen.get_height() - SLIDER_HEIGHT <= event.pos[1]:
+                dragging = True
+            elif event.type == pygame.MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == pygame.MOUSEMOTION and dragging:
+                slider_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_slider_pos))
+        if not frame_queue.empty():
+            frame = frame_queue.get()
+            intensity = slider_pos / max_slider_pos  # 0 to 1
+            map_x, map_y = precompute_distortion_map((target_height, target_width), intensity, x_offset=20, y_offset=-10)
+            processed_frame = apply_realistic_combined_effect(frame, blur_mask, map_x, map_y, downscale_factor, intensity)
+            display_frame_with_pygame(processed_frame, screen, slider_pos, max_slider_pos)
+
+def realtime_video_processing():
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+    pygame.init()
+    screen = pygame.display.set_mode((1280, 720), pygame.FULLSCREEN)
+    pygame.display.set_caption("Real-time Disease Progression Simulation")
+    frame_queue = Queue(maxsize=10)
+    stop_event = Event()
+    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
+    reader_thread.start()
+    try:
+        video_processor(frame_queue, stop_event, screen)
+    finally:
+        stop_event.set()
+        reader_thread.join()
+        cap.release()
+        pygame.quit()
+
+if __name__ == "__main__":
+    realtime_video_processing()
