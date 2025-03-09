@@ -1,0 +1,174 @@
+import cv2
+import numpy as np
+import time
+import pygame
+from pygame.locals import *
+
+# Enable GPU acceleration in OpenCV
+cv2.setUseOptimized(True)
+cv2.ocl.setUseOpenCL(True)
+
+# Scrollbar parameters
+SCROLLBAR_HEIGHT = 20
+SCROLLBAR_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+THUMB_WIDTH = 40
+
+class AMDState:
+    def __init__(self):
+        self.current_mask = None
+        self.current_params = (0, 0)
+        self.organic_seed = 42  # Fixed seed for consistent extensions
+
+    def apply_blur_effect(self, image, sigma):
+        h, w = image.shape[:2]
+        center_x, center_y = w // 2, h // 2
+
+        y_indices, x_indices = np.meshgrid(np.arange(h), np.arange(w), indexing='ij')
+        distance_from_center = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
+        
+        blur_mask = np.exp(-(distance_from_center**2) / (2 * (sigma**2))).astype(np.float32)
+        blur_mask = cv2.normalize(blur_mask, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+
+        gaussian_kernel = cv2.getGaussianKernel(31, sigma)
+        heavy_blur = cv2.sepFilter2D(image, -1, gaussian_kernel, gaussian_kernel)
+
+        blur_mask_3d = cv2.merge([blur_mask] * 3)
+        blurred_part = cv2.multiply(heavy_blur.astype(np.float32), blur_mask_3d)
+        original_part = cv2.multiply(image.astype(np.float32), 1 - blur_mask_3d)
+        return cv2.add(blurred_part, original_part).astype(np.uint8)
+
+    def generate_organic_extensions(self, mask, h, w, extension_prob):
+        rng = np.random.RandomState(self.organic_seed)
+        random_mask = (rng.rand(h, w) < extension_prob) & (mask > 0.5) & (mask < 1)
+        random_indices = np.column_stack(np.where(random_mask))
+
+        for y_ext, x_ext in random_indices:
+            blob_radius = rng.randint(10, 30)
+            cv2.circle(mask, (x_ext, y_ext), blob_radius, 1, -1)
+
+        return cv2.GaussianBlur(mask.astype(np.float32), (51, 51), 0)
+
+    def create_black_spot_mask(self, frame, spot_size, fade_area):
+        h, w = frame.shape[:2]
+        y, x = np.ogrid[:h, :w]
+        center_x, center_y = w//2, h//2
+        
+        distances = np.sqrt((x - center_x)**2 + (y - center_y)**2)
+        mask = np.ones((h, w), dtype=np.float32)
+        
+        mask[distances <= spot_size] = 0
+        fade_zone = (distances > spot_size) & (distances <= spot_size + fade_area)
+        mask[fade_zone] = (distances[fade_zone] - spot_size) / fade_area
+        
+        # Use appropriate extension probability based on stage
+        extension_prob = 0.006 if spot_size <= 5 else 0.005
+        return self.generate_organic_extensions(mask, h, w, extension_prob)
+
+    def apply_distortion(self, image, center_x, center_y, radius):
+        rows, cols = image.shape[:2]
+        amplitude, wavelength = 2, 100
+
+        shift_x = (amplitude * np.sin(2 * np.pi * np.arange(rows)[:, None] / wavelength)).astype(int)
+        shift_y = (amplitude * np.cos(2 * np.pi * np.arange(cols)[None, :] / wavelength)).astype(int)
+
+        y_indices, x_indices = np.meshgrid(np.arange(rows), np.arange(cols), indexing='ij')
+        distances = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
+
+        within_radius = distances <= radius
+        new_x = np.clip(x_indices + shift_x * within_radius, 0, cols - 1)
+        new_y = np.clip(y_indices + shift_y * within_radius, 0, rows - 1)
+
+        distorted = image.copy()
+        distorted[within_radius] = image[new_y[within_radius], new_x[within_radius]]
+        return distorted
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
+    screen_info = pygame.display.Info()
+    screen_w, screen_h = screen_info.current_w, screen_info.current_h
+    
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    
+    amd_state = AMDState()
+    scroll_pos = 0
+    max_scroll = screen_w - THUMB_WIDTH
+    dragging = False
+    current_mask = None
+    last_params = (-1, -1)
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        progression = scroll_pos / max_scroll
+        
+        if progression <= 0.33:
+            blur_strength = progression / 0.33
+            spot_size = 0
+            fade_area = 0
+        elif progression <= 0.66:
+            blur_strength = 1.0
+            mid_progress = (progression - 0.33) / 0.33
+            spot_size = mid_progress * 5
+            fade_area = mid_progress * 500
+        else:
+            blur_strength = 1.0
+            late_progress = (progression - 0.66) / 0.34
+            spot_size = 5 + late_progress * 175
+            fade_area = 500 - late_progress * 310
+        
+        # Only regenerate mask when parameters change
+        if (spot_size, fade_area) != last_params:
+            current_mask = amd_state.create_black_spot_mask(frame, spot_size, fade_area)
+            last_params = (spot_size, fade_area)
+        
+        # Apply blur effect
+        sigma = blur_strength * (frame.shape[1] // 4)
+        processed = amd_state.apply_blur_effect(frame, sigma)
+        
+        # Apply black spot and distortion if needed
+        if spot_size > 0:
+            small_frame = cv2.resize(processed, (640, 360))
+            small_mask = cv2.resize(current_mask, (640, 360))
+            faded = cv2.resize((small_frame * small_mask[..., None]).astype(np.uint8), 
+                             (processed.shape[1], processed.shape[0]))
+            processed = amd_state.apply_distortion(faded, frame.shape[1]//2, 
+                                                 frame.shape[0]//2, int(spot_size + fade_area + 50))
+        
+        # Convert to Pygame surface
+        rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
+        rgb = cv2.resize(rgb, (screen_w, screen_h))
+        surf = pygame.surfarray.make_surface(np.rot90(rgb))
+        
+        # Draw scrollbar
+        pygame.draw.rect(surf, SCROLLBAR_COLOR, (0, screen_h - SCROLLBAR_HEIGHT, screen_w, SCROLLBAR_HEIGHT))
+        pygame.draw.rect(surf, THUMB_COLOR, (scroll_pos, screen_h - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+        
+        # Update display
+        screen.blit(surf, (0, 0))
+        pygame.display.flip()
+        
+        # Handle events
+        for event in pygame.event.get():
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
+            elif event.type == MOUSEBUTTONDOWN:
+                if screen_h - SCROLLBAR_HEIGHT <= event.pos[1] <= screen_h:
+                    dragging = True
+            elif event.type == MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == MOUSEMOTION and dragging:
+                scroll_pos = max(0, min(event.pos[0] - THUMB_WIDTH//2, max_scroll))
+    
+    cap.release()
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
