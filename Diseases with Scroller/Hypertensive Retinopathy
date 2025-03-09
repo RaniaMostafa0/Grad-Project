@@ -82,7 +82,7 @@ def create_mask(h, w, spots, p):
 
 # Process frame with gradual symptom progression
 def process_frame(frame, p, spots):
-    flipped_frame = cv2.flip(frame, 1)  # Mirror webcam feed
+    #flipped_frame = cv2.flip(frame, 1)  # Mirror webcam feed
     # Contrast reduction
     if p < 0.25:
         factor = 1.0
@@ -90,7 +90,7 @@ def process_frame(frame, p, spots):
         factor = 1.0 - (p - 0.25) / 0.25 * 0.5  # From 1.0 to 0.5
     else:
         factor = 0.5
-    contrast_reduced = apply_contrast_reduction(flipped_frame, factor)
+    contrast_reduced = apply_contrast_reduction(frame, factor)
     # Blur
     if p < 0.5:
         k = 1
@@ -117,7 +117,7 @@ def main():
     screen_info = pygame.display.Info()
     screen_w, screen_h = screen_info.current_w, screen_info.current_h
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
     if not cap.isOpened():
         print("Failed to open webcam.")
         pygame.quit()
