@@ -2,27 +2,21 @@ import cv2
 import numpy as np
 import pygame
 from pygame.locals import *
-import random
+
+# Enable GPU acceleration in OpenCV if available
+cv2.setUseOptimized(True)
+cv2.ocl.setUseOpenCL(True)
 
 # Scrollbar parameters
 SCROLLBAR_HEIGHT = 20
-SCROLLBAR_COLOR = (100, 100, 100)
-THUMB_COLOR = (200, 200, 200)
+SCROLLBAR_COLOR = (100, 100, 100)  # Gray
+THUMB_COLOR = (200, 200, 200)      # Light gray
 THUMB_WIDTH = 40
 
-# Spot class to hold parameters for third and final stages
-class Spot:
-    def __init__(self, center_x, center_y):
-        self.center_x = center_x
-        self.center_y = center_y
-        # Third stage parameters (for first 18 spots)
-        self.third_radius_x = random.randint(10, 40) if random.random() < 18/25 else 0
-        self.third_radius_y = random.randint(20, 50) if self.third_radius_x > 0 else 0
-        self.third_transparency = random.uniform(0.6, 0.8) if self.third_radius_x > 0 else 0
-        # Final stage parameters (for all 25 spots)
-        self.final_radius_x = random.randint(30, 70)
-        self.final_radius_y = random.randint(40, 90)
-        self.final_transparency = random.uniform(0.85, 0.95)
+# Ensure kernel size is an odd integer
+def next_odd(n):
+    n = int(n + 0.5)
+    return n if n % 2 == 1 else n + 1
 
 # Generate non-overlapping spot positions
 def generate_spot_positions(h, w, num_spots=25, min_distance=100):
@@ -30,24 +24,18 @@ def generate_spot_positions(h, w, num_spots=25, min_distance=100):
     for _ in range(num_spots):
         attempts = 0
         while attempts < 100:
-            center_x = random.randint(0, w - 1)
-            center_y = random.randint(0, h - 1)
-            overlap = any(
-                np.sqrt((center_x - px)**2 + (center_y - py)**2) < min_distance
-                for px, py in positions
-            )
-            if not overlap:
-                positions.append((center_x, center_y))
+            cx = np.random.randint(0, w)
+            cy = np.random.randint(0, h)
+            if all(np.sqrt((cx - px)**2 + (cy - py)**2) >= min_distance for px, py in positions):
+                positions.append((cx, cy))
                 break
             attempts += 1
         if attempts >= 100:
-            print("Warning: Could not place a spot after 100 attempts.")
+            print("Warning: Could not place spot without overlap after 100 attempts.")
     return positions
 
-# Apply contrast reduction
+# Apply contrast reduction using LAB color space
 def apply_contrast_reduction(image, factor):
-    if factor == 1:
-        return image
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     l = cv2.addWeighted(l, factor, np.full_like(l, 128, dtype=np.uint8), 1 - factor, 0)
@@ -60,58 +48,62 @@ def apply_blur(image, kernel_size):
         return image
     return cv2.GaussianBlur(image, kernel_size, 0)
 
-# Create faded spots mask
+# Create mask with elliptical spots and transition zones
 def create_mask(h, w, spots, p):
-    if p < 0.75:
+    if p < 0.6:
         return np.zeros((h, w), dtype=np.float32)
+    t = (p - 0.6) / 0.4  # Scale from 0 at p=0.6 to 1 at p=1.0
     mask = np.zeros((h, w), dtype=np.float32)
-    t = (p - 0.75) / 0.25  # Interpolation factor from 0 to 1
+    y, x = np.ogrid[:h, :w]
     for spot in spots:
-        if spot.third_radius_x > 0:  # Spots 0-17
-            radius_x = spot.third_radius_x + t * (spot.final_radius_x - spot.third_radius_x)
-            radius_y = spot.third_radius_y + t * (spot.final_radius_y - spot.third_radius_y)
-            transparency = spot.third_transparency + t * (spot.final_transparency - spot.third_transparency)
-        else:  # Spots 18-24
-            radius_x = t * spot.final_radius_x
-            radius_y = t * spot.final_radius_y
-            transparency = t * spot.final_transparency
-        if radius_x > 0 and radius_y > 0:
-            y, x = np.ogrid[:h, :w]
-            distance = np.sqrt(((x - spot.center_x) / radius_x) ** 2 + ((y - spot.center_y) / radius_y) ** 2)
-            mask[distance < 1] = np.maximum(mask[distance < 1], transparency)
-            transition = (distance >= 1) & (distance < 2)
-            mask[transition] = np.maximum(mask[transition], transparency * (1 - ((distance[transition] - 1) / 1)))
-    # Apply separable Gaussian blur to the mask
-    kernel_size = int(101 + t * (151 - 101))
-    sigma = 20 + t * (50 - 20)
-    k = cv2.getGaussianKernel(kernel_size, sigma)
-    blurred_mask = cv2.filter2D(mask, -1, k)
-    blurred_mask = cv2.filter2D(blurred_mask, -1, k.T)
-    return np.clip(blurred_mask, 0, 1)
+        cx, cy = spot['center']
+        max_rx = spot['max_radius_x']
+        max_ry = spot['max_radius_y']
+        max_trans = spot['max_transparency']
+        rx = t * max_rx
+        ry = t * max_ry
+        trans = t * max_trans
+        if rx < 1 or ry < 1:  # Skip if spot is too small
+            continue
+        # Compute distance for ellipse
+        distance = np.sqrt(((x - cx) / rx)**2 + ((y - cy) / ry)**2)
+        # Core of the spot
+        mask[distance < 1] = np.maximum(mask[distance < 1], trans)
+        # Transition zone (distance 1 to 2)
+        transition = (distance >= 1) & (distance < 2)
+        if transition.any():
+            fade = trans * (1 - (distance[transition] - 1))
+            mask[transition] = np.maximum(mask[transition], fade)
+    # Apply Gaussian blur to mask
+    kernel_size = next_odd(101 + t * 50)  # From 101 to 151
+    sigma = 20 + t * 30  # From 20 to 50
+    mask = cv2.GaussianBlur(mask, (kernel_size, kernel_size), sigma)
+    return np.clip(mask, 0, 1)
 
-# Process each frame based on scrollbar position
+# Process frame with gradual symptom progression
 def process_frame(frame, p, spots):
-    flipped_frame = cv2.flip(frame, 1)
+    flipped_frame = cv2.flip(frame, 1)  # Mirror webcam feed
     # Contrast reduction
     if p < 0.25:
-        factor = 1  # No symptoms
+        factor = 1.0
     elif p < 0.5:
-        factor = 0.65  # First stage
+        factor = 1.0 - (p - 0.25) / 0.25 * 0.5  # From 1.0 to 0.5
     else:
-        factor = 0.5  # Second, third, final stages
+        factor = 0.5
     contrast_reduced = apply_contrast_reduction(flipped_frame, factor)
     # Blur
     if p < 0.5:
-        kernel_size = (1, 1)  # No blur
+        k = 1
     elif p < 0.75:
-        kernel_size = (5, 5)  # Second stage
+        t1 = (p - 0.5) / 0.25
+        k = next_odd(1 + t1 * 4)  # From 1 to 5
     else:
-        t = (p - 0.75) / 0.25
-        k = int(9 + t * 12)  # Interpolate from 9 to 21
-        kernel_size = (k if k % 2 == 1 else k + 1, k if k % 2 == 1 else k + 1)  # Ensure odd size
+        t2 = (p - 0.75) / 0.25
+        k = next_odd(5 + t2 * 16)  # From 5 to 21
+    kernel_size = (k, k)
     blurred_frame = apply_blur(contrast_reduced, kernel_size)
-    # Faded spots
-    if p >= 0.75:
+    # Black spots
+    if p >= 0.6:
         h, w = blurred_frame.shape[:2]
         mask = create_mask(h, w, spots, p)
         inverse_mask = 1 - mask
@@ -119,15 +111,12 @@ def process_frame(frame, p, spots):
         return faded_spots
     return blurred_frame
 
-# Main function
 def main():
-    # Initialize Pygame
     pygame.init()
     screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
     screen_info = pygame.display.Info()
     screen_w, screen_h = screen_info.current_w, screen_info.current_h
 
-    # Initialize webcam
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Failed to open webcam.")
@@ -145,22 +134,31 @@ def main():
         return
     h, w = frame.shape[:2]
 
-    # Generate spots
-    spot_positions = generate_spot_positions(h, w)
-    spots = [Spot(cx, cy) for cx, cy in spot_positions]
+    # Generate spots with maximum parameters
+    spot_positions = generate_spot_positions(h, w, num_spots=25, min_distance=100)
+    spots = []
+    for cx, cy in spot_positions:
+        max_rx = np.random.randint(30, 70)  # Maximum x-radius
+        max_ry = np.random.randint(40, 90)  # Maximum y-radius
+        max_trans = np.random.uniform(0.85, 0.95)  # Maximum transparency
+        spots.append({
+            'center': (cx, cy),
+            'max_radius_x': max_rx,
+            'max_radius_y': max_ry,
+            'max_transparency': max_trans
+        })
 
     # Scrollbar variables
     scroll_pos = 0
     max_scroll = screen_w - THUMB_WIDTH
     dragging = False
 
-    # Main loop
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # Calculate progression
+        # Calculate progression (0 to 1)
         p = scroll_pos / max_scroll
 
         # Process frame
@@ -181,19 +179,18 @@ def main():
 
         # Handle events
         for event in pygame.event.get():
-            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                 cap.release()
                 pygame.quit()
                 return
-            elif event.type == pygame.MOUSEBUTTONDOWN:
+            elif event.type == MOUSEBUTTONDOWN:
                 if screen_h - SCROLLBAR_HEIGHT <= event.pos[1] <= screen_h:
                     dragging = True
-            elif event.type == pygame.MOUSEBUTTONUP:
+            elif event.type == MOUSEBUTTONUP:
                 dragging = False
-            elif event.type == pygame.MOUSEMOTION and dragging:
+            elif event.type == MOUSEMOTION and dragging:
                 scroll_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_scroll))
 
-    # Cleanup
     cap.release()
     pygame.quit()
 
