@@ -7,7 +7,7 @@ from threading import Thread, Event
 from queue import Queue
 
 # Define the glare and halo effect function
-def apply_glare_and_halo(image, mask, intensity, max_blur_radius=30):
+def apply_glare_and_halo(image, mask, intensity, max_blur_radius=30, power=2):
     """
     Apply glare and halo effect to the bright areas of the image.
 
@@ -16,38 +16,23 @@ def apply_glare_and_halo(image, mask, intensity, max_blur_radius=30):
     - mask: Grayscale mask of bright areas (0 or 255).
     - intensity: Effect strength [0, 1], controlled by the scrollbar.
     - max_blur_radius: Maximum blur radius for the halo size.
+    - power: Exponent to control the fall-off of the halo effect.
     
     Returns:
     - final_image: Image with the halo effect applied.
     """
     if intensity > 0:
-        # Calculate blur radius based on intensity (0 to max_blur_radius)
         blur_radius = intensity * max_blur_radius
-        # Apply Gaussian blur to the mask to create a diffused halo
         blurred_mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=blur_radius, sigmaY=blur_radius)
-        # Normalize the blurred mask to [0, 1]
-        blurred_mask = blurred_mask / 255.0
-        # Create a halo layer (white light diffused around bright areas)
+        # Normalize and apply power transformation to concentrate the halo
+        blurred_mask = (blurred_mask / 255.0) ** power
         halo_layer = (np.ones_like(image) * 255 * blurred_mask[:, :, np.newaxis]).astype(np.uint8)
-        # Add the halo to the original image with intensity as the weight
         final_image = cv2.addWeighted(image, 1, halo_layer, intensity, 0)
     else:
-        # No effect when intensity is 0
         final_image = image
     return final_image
 
 def get_scaled_dimensions(original_size, target_size):
-    """
-    Calculate the new size to maintain aspect ratio.
-
-    Parameters:
-    - original_size: Tuple of (width, height) of the original image.
-    - target_size: Tuple of (width, height) of the target display.
-
-    Returns:
-    - new_size: Tuple of (width, height) after scaling.
-    - position: Tuple of (x, y) position to center the image.
-    """
     original_width, original_height = original_size
     target_width, target_height = target_size
     scale_factor = min(target_width / original_width, target_height / original_height)
@@ -58,9 +43,6 @@ def get_scaled_dimensions(original_size, target_size):
     return (new_width, new_height), (x_pos, y_pos)
 
 def video_reader(cap, frame_queue, stop_event):
-    """
-    Reads frames from the video capture and pushes them to a queue.
-    """
     while not stop_event.is_set():
         ret, frame = cap.read()
         if not ret:
@@ -69,44 +51,25 @@ def video_reader(cap, frame_queue, stop_event):
         frame_queue.put(frame)
 
 def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
-    """
-    Real-time processing of video frames from a webcam using Pygame for display.
-    
-    Parameters:
-    - webcam_index: Index of the webcam (default is 0).
-    - resolution: Tuple specifying the resolution (width, height).
-    """
-    # Initialize Pygame
     pygame.init()
     pygame.display.set_caption("Glare and Halo Simulation")
-
-    # Set up the display
     screen_width, screen_height = resolution
     screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
 
-    # Open the webcam
     cap = cv2.VideoCapture(webcam_index)
-
     if not cap.isOpened():
         print("Error: Unable to access webcam.")
         pygame.quit()
         return
 
-    # Set the webcam resolution
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
 
-    # Initialize threading components
     frame_queue = Queue(maxsize=10)
     stop_event = Event()
     reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
     reader_thread.start()
 
-    # Track FPS
-    frame_count = 0
-    total_time = 0
-
-    # Slider properties
     SCROLLBAR_HEIGHT = 20
     SCROLLBAR_COLOR = (100, 100, 100)
     THUMB_COLOR = (200, 200, 200)
@@ -116,7 +79,6 @@ def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
     dragging = False
 
     print("Press 'ESC' or close the window to stop the simulation.")
-
     clock = pygame.time.Clock()
 
     try:
@@ -138,37 +100,27 @@ def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
                 frame = frame_queue.get()
                 start_time = time.time()
 
-                # Convert to RGB
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                # Detect bright areas
                 gray_image = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-                _, bright_areas = cv2.threshold(gray_image, 200, 255, cv2.THRESH_BINARY)
+                # Decreased threshold as per your suggestion (adjustable)
+                threshold_value = 220  # Try 180 instead of 200
+                _, bright_areas = cv2.threshold(gray_image, threshold_value, 255, cv2.THRESH_BINARY)
 
-                # Calculate intensity from scrollbar (0 to 1)
                 intensity = scroll_pos / max_scroll
+                final_frame = apply_glare_and_halo(frame_rgb, bright_areas, intensity, power=2)
 
-                # Apply the glare and halo effect
-                final_frame = apply_glare_and_halo(frame_rgb, bright_areas, intensity)
-
-                # Scale to fit screen while maintaining aspect ratio
                 original_size = (final_frame.shape[1], final_frame.shape[0])
                 scaled_size, position = get_scaled_dimensions(original_size, (screen_width, screen_height))
                 frame_resized = cv2.resize(final_frame, scaled_size, interpolation=cv2.INTER_AREA)
 
-                # Convert to Pygame surface
                 frame_surface = pygame.surfarray.make_surface(np.rot90(frame_resized))
-
-                # Draw to screen
                 screen.fill((0, 0, 0))
                 screen.blit(frame_surface, position)
                 pygame.draw.rect(screen, SCROLLBAR_COLOR, (0, screen_height - SCROLLBAR_HEIGHT, screen_width, SCROLLBAR_HEIGHT))
                 pygame.draw.rect(screen, THUMB_COLOR, (scroll_pos, screen_height - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
                 pygame.display.flip()
 
-                # Calculate FPS
                 processing_time = time.time() - start_time
-                total_time += processing_time
-                frame_count += 1
                 fps = 1 / processing_time if processing_time > 0 else 0
                 pygame.display.set_caption(f"Glare and Halo Simulation - FPS: {fps:.2f}")
 
@@ -182,14 +134,6 @@ def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
         reader_thread.join()
         cap.release()
         pygame.quit()
-        if frame_count > 0:
-            avg_time = total_time / frame_count
-            overall_fps = frame_count / total_time
-            print(f"Total frames processed: {frame_count}")
-            print(f"Total processing time: {total_time:.4f} seconds")
-            print(f"Average processing time per frame: {avg_time:.4f} seconds")
-            print(f"Real-time processing FPS: {overall_fps:.2f}")
 
-# Run the simulation
 if __name__ == "__main__":
     realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720))
