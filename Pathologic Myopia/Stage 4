@@ -1,0 +1,112 @@
+import cv2
+import numpy as np
+import time
+from IPython.display import display, clear_output
+from PIL import Image
+import threading
+
+def adjust_contrast(image, alpha=0.7, beta=10):
+    gray = np.full(image.shape, 128, dtype=np.uint8)
+    adjusted_image = cv2.convertScaleAbs(image * alpha + gray * (1 - alpha) + beta)
+    return adjusted_image
+
+def generate_black_spot_mask(h, w, black_spot_size=180, fade_area_size=190):
+    y_indices, x_indices = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
+    distances = np.sqrt((x_indices - w // 2) ** 2 + (y_indices - h // 2) ** 2)
+    mask = np.ones((h, w), dtype=np.float32)
+    
+    mask[distances <= black_spot_size] = 0
+    fade_zone = (distances > black_spot_size) & (distances <= black_spot_size + fade_area_size)
+    mask[fade_zone] = (distances[fade_zone] - black_spot_size) / fade_area_size  
+    
+    extension_probability = 0.005
+    random_mask = (np.random.rand(h, w) < extension_probability) & (mask > 0.5) & (mask < 1)
+    random_indices = np.column_stack(np.where(random_mask))
+    for y_ext, x_ext in random_indices:
+        blob_radius = np.random.randint(10, 30)
+        cv2.circle(mask, (x_ext, y_ext), blob_radius, 1, -1)
+    
+    return cv2.GaussianBlur(mask.astype(np.float32), (51, 51), 0)
+
+def generate_peripheral_spots(h, w, num_spots=60):
+    mask = np.zeros((h, w), dtype=np.float32)
+    for _ in range(num_spots):
+        center_x = np.random.randint(0, w)
+        center_y = np.random.randint(0, h)
+        base_radius_x = np.random.randint(10, 40)
+        base_radius_y = np.random.randint(20, 50)
+        transparency = np.random.uniform(0.6, 0.8)
+        
+        y, x = np.ogrid[:h, :w]
+        distance_x = ((x - center_x) / base_radius_x) ** 2
+        distance_y = ((y - center_y) / base_radius_y) ** 2
+        distance = np.sqrt(distance_x + distance_y)
+        mask[distance < 1] = np.maximum(mask[distance < 1], transparency)
+        transition_region = (distance >= 1) & (distance < 2)
+        mask[transition_region] = np.maximum(mask[transition_region], transparency * (1 - ((distance[transition_region] - 1) / 1)))
+    
+    return cv2.GaussianBlur(mask, (101, 101), 20)
+
+def apply_combined_effect(image, black_spot_mask, peripheral_spot_mask):
+    h, w = image.shape[:2]
+    center_x, center_y = w // 2, h // 2
+    
+    # Further increase the area of blurring and distortion
+    blur_radius = int(min(h, w) * 0.4)  # Expanding blur effect even more
+    x, y = np.meshgrid(np.arange(w), np.arange(h))
+    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    mask = distance > blur_radius  # Blur effect takes up more of the screen
+    fade_factor = np.clip((distance - blur_radius) / blur_radius, 0, 1)
+    
+    blurred_image = cv2.GaussianBlur(image, (35, 35), 0)
+    final_image = np.where(mask[..., None], blurred_image, image).astype(np.uint8)
+    
+    final_image = adjust_contrast(final_image)
+    black_spot_3d = cv2.merge([black_spot_mask] * 3)
+    final_image = cv2.convertScaleAbs(final_image * black_spot_3d)
+    
+    peripheral_spot_3d = cv2.merge([peripheral_spot_mask] * 3)
+    final_image = cv2.convertScaleAbs(final_image * (1 - peripheral_spot_3d))
+    
+    return final_image
+
+def display_frame_in_notebook(frame):
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(frame_rgb)
+    clear_output(wait=True)
+    display(pil_image)
+
+def simulate_macular_pucker_webcam():
+    cap = cv2.VideoCapture(1)  # Use 0 if your default webcam is at index 0
+    if not cap.isOpened():
+        print("Failed to open webcam.")
+        return
+    
+    ret, sample_frame = cap.read()
+    if not ret:
+        print("Failed to capture frame for initialization.")
+        cap.release()
+        return
+    
+    target_height = 720
+    target_width = int(sample_frame.shape[1] * (target_height / sample_frame.shape[0]))
+    
+    black_spot_mask = generate_black_spot_mask(target_height, target_width)
+    peripheral_spot_mask = generate_peripheral_spots(target_height, target_width)
+    
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Failed to capture frame.")
+                break
+            
+            frame_resized = cv2.resize(frame, (target_width, target_height))
+            frame_flipped = cv2.flip(frame_resized, 1)  # Flip the frame horizontally
+            processed_frame = apply_combined_effect(frame_flipped, black_spot_mask, peripheral_spot_mask)
+            display_frame_in_notebook(processed_frame)
+    except KeyboardInterrupt:
+        print("Exiting simulation.")
+    cap.release()
+
+simulate_macular_pucker_webcam()
