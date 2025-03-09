@@ -2,100 +2,79 @@ import cv2
 import numpy as np
 import time
 import pygame
-from pygame.locals import *
+from pygame.locals import QUIT, KEYDOWN, K_ESCAPE
+from threading import Thread, Event
+from queue import Queue
 
-# Slider parameters
-SLIDER_HEIGHT = 20
-SLIDER_COLOR = (100, 100, 100)
-THUMB_COLOR = (200, 200, 200)
-THUMB_WIDTH = 40
-
-def process_frame(frame, p):
+def process_frame(frame, intensity):
     """
-    Process a frame to simulate nuclear cataract progression.
+    Process a single frame to simulate nuclear cataract symptoms dynamically.
     
-    Parameters:
-    - frame: Input BGR frame.
-    - p: Progression factor (0 to 1) from the slider.
+    The intensity is controlled by a scrollbar (0 to 1).
+    1. Apply Gaussian Blur (increases with intensity).
+    2. Apply a yellow tint (strength depends on intensity).
+    3. Reduce contrast (progressively reduces clarity).
     """
-    # Flip frame to correct webcam mirroring
-    frame = cv2.flip(frame, 1)
+    # 1. Gaussian Blur (dynamic kernel size based on intensity)
+    blur_strength = int(intensity * 20)  # Scale for noticeable effect
+    blur_strength = max(1, blur_strength)
+    if blur_strength % 2 == 0:
+        blur_strength += 1  # Ensure kernel size is odd
 
-    # Phase 1: 0 to 0.25 - No symptoms
-    if p <= 0.25:
-        return frame.copy()
+    blurred_frame = cv2.GaussianBlur(frame, (blur_strength, blur_strength), 5)
 
-    # Phase 2: 0.25 to 0.5 - Yellow pigmentation
-    yellow_factor = min(1.0, max(0.0, (p - 0.25) / 0.25))
-    blue_factor = 1 - 0.5 * yellow_factor  # Blue from 1 to 0.5
-    yellow_tint = np.array([blue_factor, 1.0, 1.0], dtype=np.float32)  # [B, G, R]
-    yellow_frame = frame.astype(np.float32) * yellow_tint
+    # 2. Yellow Tint (progressive yellowing effect)
+    yellow_tint = np.array([1.0 - 0.5 * intensity, 1.0, 1.0], dtype=np.float32)  # Reduce Blue progressively
+    yellow_frame = blurred_frame.astype(np.float32) * yellow_tint
     yellow_frame = np.clip(yellow_frame, 0, 255).astype(np.uint8)
 
-    # Phase 3: 0.5 to 1 - Severe blur/cloudiness
-    if p > 0.5:
-        blur_factor = min(1.0, max(0.0, (p - 0.5) / 0.5))
-        kernel_size = int(1 + 30 * blur_factor)  # 1 to 31 for severe blur
-        kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
-        sigma = 10 * blur_factor  # 0 to 10 for cloudy effect
-        blurred_frame = cv2.GaussianBlur(yellow_frame, (kernel_size, 1), sigma)  # Horizontal
-        blurred_frame = cv2.GaussianBlur(blurred_frame, (1, kernel_size), sigma)  # Vertical
-    else:
-        blurred_frame = yellow_frame
+    # 3. Reduce Contrast (gradual decrease with intensity)
+    contrast_factor = 1.0 - 0.35 * intensity  # Reduce contrast progressively
+    brightness_adjustment = 30 * intensity  # Simulate visual dullness
+    contrast_frame = cv2.convertScaleAbs(yellow_frame, alpha=contrast_factor, beta=brightness_adjustment)
 
-    return blurred_frame
+    return contrast_frame
 
-def display_frame_with_pygame(frame, screen, scroll_pos, max_scroll):
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    screen_width, screen_height = screen.get_size()
-    frame_height, frame_width = frame_rgb.shape[:2]
+def get_scaled_dimensions(original_size, target_size):
+    """
+    Calculate the new size to maintain aspect ratio.
+    """
+    original_width, original_height = original_size
+    target_width, target_height = target_size
 
-    display_height = screen_height - SLIDER_HEIGHT - 20
-    scale = screen_width / frame_width
-    new_width = screen_width
-    new_height = int(frame_height * scale)
+    scale_factor = min(target_width / original_width, target_height / original_height)
+    new_width = int(original_width * scale_factor)
+    new_height = int(original_height * scale_factor)
+    x_pos = (target_width - new_width) // 2
+    y_pos = (target_height - new_height) // 2
 
-    resized_frame = cv2.resize(frame_rgb, (new_width, new_height))
-    if new_height > display_height:
-        crop_start = (new_height - display_height) // 2
-        crop_end = crop_start + display_height
-        cropped_frame = resized_frame[crop_start:crop_end, :]
-    else:
-        cropped_frame = np.zeros((display_height, screen_width, 3), dtype=np.uint8)
-        y_offset = (display_height - new_height) // 2
-        cropped_frame[y_offset:y_offset + new_height, :] = resized_frame
+    return (new_width, new_height), (x_pos, y_pos)
 
-    frame_surface = pygame.surfarray.make_surface(cropped_frame.transpose([1, 0, 2]))
-    full_surface = pygame.Surface((screen_width, screen_height))
-    full_surface.fill((0, 0, 0))
-    full_surface.blit(frame_surface, (0, 0))
+def video_reader(cap, frame_queue, stop_event):
+    """
+    Reads frames from the webcam and pushes them to a queue.
+    """
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            stop_event.set()
+            break
+        frame_queue.put(frame)
 
-    # Draw the slider
-    SLIDER_X = 20
-    SLIDER_Y = screen_height - SLIDER_HEIGHT - 20
-    SLIDER_WIDTH = screen_width - 40
-    pygame.draw.rect(full_surface, SLIDER_COLOR, (SLIDER_X, SLIDER_Y, SLIDER_WIDTH, SLIDER_HEIGHT))
-    thumb_x = SLIDER_X + scroll_pos
-    pygame.draw.rect(full_surface, THUMB_COLOR, (thumb_x, SLIDER_Y, THUMB_WIDTH, SLIDER_HEIGHT))
-
-    screen.blit(full_surface, (0, 0))
-    pygame.display.flip()
-
-def simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720)):
+def simulate_cataract_with_slider(webcam_index=0, resolution=(1280, 720)):
+    """
+    Simulates nuclear cataract in real-time using a webcam with a scrollbar to control severity.
+    """
+    # Initialize Pygame
     pygame.init()
     pygame.display.set_caption("Nuclear Cataract Simulation")
-    display_info = pygame.display.Info()
-    screen_width, screen_height = display_info.current_w, display_info.current_h
+
+    # Set up fullscreen display
+    screen_width, screen_height = resolution
     screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
 
-    # Slider variables
-    scroll_pos = 0
-    SLIDER_X = 20
-    SLIDER_WIDTH = screen_width - 40
-    max_scroll = SLIDER_WIDTH - THUMB_WIDTH
-    dragging = False
-
-    cap = cv2.VideoCapture(0)
+    # Open webcam
+    cap = cv2.VideoCapture(webcam_index)
     if not cap.isOpened():
         print("Error: Unable to access webcam.")
         pygame.quit()
@@ -104,56 +83,108 @@ def simulate_cataract_realtime_pygame(webcam_index=0, resolution=(1280, 720)):
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
 
-    frame_count = 0
-    total_time = 0
-    clock = pygame.time.Clock()
+    # Threading setup
+    frame_queue = Queue(maxsize=10)
+    stop_event = Event()
+    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
+    reader_thread.start()
 
-    print("Press 'ESC' or close the window to stop. Drag the slider to adjust cataract severity.")
+    # FPS tracking
+    frame_count = 0
+    start_time = time.time()
+
+    # Slider UI properties
+    SCROLLBAR_HEIGHT = 20
+    SCROLLBAR_COLOR = (100, 100, 100)
+    THUMB_COLOR = (200, 200, 200)
+    THUMB_WIDTH = 40
+    scroll_pos = 0
+    max_scroll = screen_width - THUMB_WIDTH
+    dragging = False
+
+    print("Press 'ESC' or close the window to stop the simulation.")
+
+    clock = pygame.time.Clock()
 
     try:
         while True:
             for event in pygame.event.get():
-                if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                if event.type == QUIT:
                     raise KeyboardInterrupt
-                elif event.type == MOUSEBUTTONDOWN:
-                    mouse_x, mouse_y = event.pos
-                    SLIDER_Y = screen_height - SLIDER_HEIGHT - 20
-                    if (SLIDER_X <= mouse_x <= SLIDER_X + SLIDER_WIDTH and
-                        SLIDER_Y <= mouse_y <= SLIDER_Y + SLIDER_HEIGHT):
-                        dragging = True
-                elif event.type == MOUSEBUTTONUP:
+                if event.type == KEYDOWN and event.key == K_ESCAPE:
+                    raise KeyboardInterrupt
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 1:  # Left mouse button
+                        mouse_x, mouse_y = event.pos
+                        if (scroll_pos <= mouse_x <= scroll_pos + THUMB_WIDTH and
+                                screen_height - SCROLLBAR_HEIGHT <= mouse_y <= screen_height):
+                            dragging = True
+                elif event.type == pygame.MOUSEBUTTONUP:
                     dragging = False
-                elif event.type == MOUSEMOTION and dragging:
-                    mouse_x, _ = event.pos
-                    scroll_pos = max(0, min(mouse_x - SLIDER_X - THUMB_WIDTH // 2, max_scroll))
+                elif event.type == pygame.MOUSEMOTION and dragging:
+                    mouse_x, mouse_y = event.pos
+                    scroll_pos = max(0, min(mouse_x - THUMB_WIDTH // 2, max_scroll))
 
-            ret, frame = cap.read()
-            if not ret:
-                print("Error: Unable to read frame from webcam.")
-                break
+            if not frame_queue.empty():
+                frame = frame_queue.get()
 
-            start_time = time.time()
-            p = scroll_pos / max_scroll
-            processed_frame = process_frame(frame, p)
-            display_frame_with_pygame(processed_frame, screen, scroll_pos, max_scroll)
+                # Map scrollbar position to intensity (0 to 1)
+                intensity = scroll_pos / max_scroll
 
-            processing_time = time.time() - start_time
-            total_time += processing_time
-            frame_count += 1
-            fps = 1 / processing_time if processing_time > 0 else 0
-            pygame.display.set_caption(f"Nuclear Cataract Simulation - FPS: {fps:.2f} - Severity: {p:.2f}")
+                # Process frame dynamically
+                processed_frame = process_frame(frame, intensity)
 
+                # Convert BGR to RGB
+                frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+
+                # Maintain aspect ratio
+                original_size = frame_rgb.shape[1], frame_rgb.shape[0]
+                scaled_size, position = get_scaled_dimensions(original_size, (screen_width, screen_height))
+
+                # Resize frame
+                frame_resized = cv2.resize(frame_rgb, scaled_size, interpolation=cv2.INTER_AREA)
+
+                # Convert to Pygame surface
+                frame_surface = pygame.surfarray.make_surface(np.rot90(frame_resized))
+
+                # Clear screen and draw frame
+                screen.fill((0, 0, 0))
+                screen.blit(frame_surface, position)
+
+                # Draw scrollbar
+                pygame.draw.rect(screen, SCROLLBAR_COLOR, (0, screen_height - SCROLLBAR_HEIGHT, screen_width, SCROLLBAR_HEIGHT))
+                pygame.draw.rect(screen, THUMB_COLOR, (scroll_pos, screen_height - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+
+                pygame.display.flip()
+
+                # Calculate FPS
+                frame_count += 1
+                if frame_count % 10 == 0:
+                    current_time = time.time()
+                    elapsed_time = current_time - start_time
+                    fps = frame_count / elapsed_time
+                    pygame.display.set_caption(f"Nuclear Cataract Simulation - FPS: {fps:.2f}")
+
+            # Limit to 60 FPS
             clock.tick(60)
 
     except KeyboardInterrupt:
         print("\nExiting real-time video processing.")
+
     finally:
+        stop_event.set()
+        reader_thread.join()
         cap.release()
         pygame.quit()
         if frame_count > 0:
+            elapsed_time = time.time() - start_time
+            avg_time = elapsed_time / frame_count
+            fps = frame_count / elapsed_time
             print(f"Total frames processed: {frame_count}")
-            print(f"Total processing time: {total_time:.4f} seconds")
-            print(f"Average FPS: {frame_count / total_time:.2f}")
+            print(f"Total processing time: {elapsed_time:.4f} sec")
+            print(f"Average time per frame: {avg_time:.4f} sec")
+            print(f"Real-time FPS: {fps:.2f}")
 
+# Example usage
 if __name__ == "__main__":
-    simulate_cataract_realtime_pygame(webcam_index=1, resolution=(1280, 720))
+    simulate_cataract_with_slider(webcam_index=1, resolution=(1280, 720))
