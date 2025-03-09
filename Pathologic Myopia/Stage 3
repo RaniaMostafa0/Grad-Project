@@ -11,7 +11,7 @@ def adjust_contrast(image, alpha=0.7, beta=10):
     adjusted_image = cv2.convertScaleAbs(image * alpha + gray * (1 - alpha) + beta)
     return adjusted_image
 
-def generate_black_spot_mask(h, w, black_spot_size=180, fade_area_size=190):
+def generate_black_spot_mask(h, w, black_spot_size=120, fade_area_size=190):  # Reduced black_spot_size
     """Generates the black spot effect with organic extensions, ensuring it remains unaffected by contrast adjustments."""
     y_indices, x_indices = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
     distances = np.sqrt((x_indices - w // 2) ** 2 + (y_indices - h // 2) ** 2)
@@ -30,6 +30,7 @@ def generate_black_spot_mask(h, w, black_spot_size=180, fade_area_size=190):
         cv2.circle(mask, (x_ext, y_ext), blob_radius, 1, -1)
     
     return cv2.GaussianBlur(mask.astype(np.float32), (51, 51), 0)  # Smooth mask
+
 
 def generate_peripheral_spots(h, w, num_spots=50):
     """Generates a static mask with dark spots in the peripheral vision."""
