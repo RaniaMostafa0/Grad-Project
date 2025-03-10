@@ -1,0 +1,355 @@
+import cv2
+import numpy as np
+import pygame
+from pygame.locals import *
+
+# Enable GPU acceleration in OpenCV if available
+cv2.setUseOptimized(True)
+cv2.ocl.setUseOpenCL(True)
+
+# Scrollbar parameters
+SCROLLBAR_HEIGHT = 20
+SCROLLBAR_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+THUMB_WIDTH = 40
+
+class PathologicMyopiaState:
+    def __init__(self, target_height=720, target_width=1280):
+        """Initialize the state for Pathologic Myopia simulation."""
+        self.target_height = target_height
+        self.target_width = target_width
+        self.current_p = -1  # Force initial update
+        self.blur_mask = None
+        self.spot_mask = None
+        self.black_spot_mask = None
+        self.peripheral_spot_mask = None
+        self.downscale_factor = 0.5
+        self.max_small_spots = 18
+        self.max_peripheral_spots = 60
+
+        # Generate fixed spot positions
+        self.small_spot_positions = self.generate_fixed_spot_positions(self.max_small_spots, central=True)
+        self.peripheral_spot_positions = self.generate_fixed_spot_positions(self.max_peripheral_spots, central=False)
+
+        # Compute p_activation for small spots (Stage 2: p=0.25 to p=0.5)
+        self.small_spot_p_activation = [0.25 + (i / self.max_small_spots) * 0.25 for i in range(self.max_small_spots)]
+
+        # Compute p_activation for peripheral spots
+        # First 50 spots between p=0.5 and p=0.75 (Stage 3)
+        peripheral_p_activation = [0.5 + (i / 50) * 0.25 for i in range(50)]
+        # Last 10 spots between p=0.75 and p=1 (Stage 4)
+        peripheral_p_activation += [0.75 + (i / 10) * 0.25 for i in range(10)]
+        self.peripheral_spot_p_activation = peripheral_p_activation
+
+        # Combine positions with p_activation into spot data
+        # Each spot: (center_x, center_y, base_radius_x, base_radius_y, transparency, p_activation)
+        self.small_spot_data = [pos + (p_act,) for pos, p_act in zip(self.small_spot_positions, self.small_spot_p_activation)]
+        self.peripheral_spot_data = [pos + (p_act,) for pos, p_act in zip(self.peripheral_spot_positions, self.peripheral_spot_p_activation)]
+
+    def generate_fixed_spot_positions(self, num_spots, central=True):
+        """Generate fixed positions for spots, ensuring no overlap."""
+        positions = []
+        for _ in range(num_spots):
+            while True:
+                if central:
+                    center_x = np.random.randint(self.target_width // 4, 3 * self.target_width // 4)
+                    center_y = np.random.randint(self.target_height // 4, 3 * self.target_height // 4)
+                else:
+                    center_x = np.random.randint(0, self.target_width)
+                    center_y = np.random.randint(0, self.target_height)
+                base_radius_x = np.random.randint(10, 40)
+                base_radius_y = np.random.randint(20, 50)
+                transparency = np.random.uniform(0.6, 0.8)  # Max opacity for the spot
+                overlap = any(abs(center_x - px) < (base_radius_x + rx) and 
+                              abs(center_y - py) < (base_radius_y + ry)
+                              for px, py, rx, ry, _ in positions)
+                if not overlap:
+                    positions.append((center_x, center_y, base_radius_x, base_radius_y, transparency))
+                    break
+        return positions
+
+    def create_spot_mask(self, spot_data, p, delta_p=0.01, delta_p_growth=0.05):
+        """Create a mask for spots with gradual appearance and growth based on p."""
+        mask = np.zeros((self.target_height, self.target_width), dtype=np.float32)
+        for (cx, cy, base_rx, base_ry, transparency, p_act) in spot_data:
+            # Calculate transparency factor
+            transparency_factor = min(1, max(0, (p - p_act) / delta_p))
+            if transparency_factor <= 0:
+                continue  # Spot not visible yet
+            
+            # Calculate size factor (grows over delta_p_growth)
+            size_factor = min(1, max(0, (p - p_act) / delta_p_growth))
+            current_rx = base_rx * size_factor
+            current_ry = base_ry * size_factor
+            if current_rx < 1 or current_ry < 1:
+                continue  # Too small to render
+            
+            effective_transparency = transparency * transparency_factor
+            
+            # Define bounding box for the spot (distance < 2)
+            x_min = max(0, int(cx - 2 * current_rx))
+            x_max = min(self.target_width, int(cx + 2 * current_rx))
+            y_min = max(0, int(cy - 2 * current_ry))
+            y_max = min(self.target_height, int(cy + 2 * current_ry))
+            
+            # Create grid for the bounding box
+            y, x = np.ogrid[y_min:y_max, x_min:x_max]
+            distance = np.sqrt(((x - cx) / current_rx) ** 2 + ((y - cy) / current_ry) ** 2)
+            
+            # Compute mask for the spot within the bounding box
+            spot_mask = np.zeros((y_max - y_min, x_max - x_min), dtype=np.float32)
+            spot_mask[distance < 1] = effective_transparency
+            transition = (distance >= 1) & (distance < 2)
+            spot_mask[transition] = effective_transparency * (1 - (distance[transition] - 1))
+            
+            # Add to the full mask using maximum
+            mask[y_min:y_max, x_min:x_max] = np.maximum(mask[y_min:y_max, x_min:x_max], spot_mask)
+        
+        # Apply Gaussian blur for smoother edges
+        return cv2.GaussianBlur(mask, (101, 101), 20)
+
+    def make_odd_kernel_size(self, size):
+        """Ensure kernel size is an odd integer greater than 0."""
+        size = int(size)
+        if size > 0 and size % 2 == 0:
+            size += 1
+        return size
+
+    def update_masks(self, p):
+        """Update effect masks based on progression value p."""
+        if p == self.current_p:
+            return
+        self.current_p = p
+
+        # Define effects for each stage based on p
+        if p < 0.25:  # Stage 1: Distortion and central blur
+            stage_progress = p / 0.25
+            self.distortion_amplitude = 5 * stage_progress
+            self.radius = int((min(self.target_height, self.target_width) // 4) * stage_progress)
+            desired_blur_size = 21 * stage_progress
+            self.blur_kernel_size = self.make_odd_kernel_size(desired_blur_size)
+            self.large_blur_kernel_size = 0
+            self.contrast_alpha = 1.0
+            self.small_spots = False
+            self.central_black_spot = False
+            self.peripheral_spots = False
+
+        elif 0.25 <= p < 0.5:  # Stage 2: Add small black spots
+            stage_progress = (p - 0.25) / 0.25
+            self.distortion_amplitude = 5 + 5 * stage_progress
+            self.radius = int((min(self.target_height, self.target_width) // 4) + 
+                            ((min(self.target_height, self.target_width) // 2 - 
+                              min(self.target_height, self.target_width) // 4) * stage_progress))
+            desired_blur_size = 21 + 10 * stage_progress
+            self.blur_kernel_size = self.make_odd_kernel_size(desired_blur_size)
+            self.large_blur_kernel_size = 0
+            self.contrast_alpha = 1.0
+            self.small_spots = True
+            self.central_black_spot = False
+            self.peripheral_spots = False
+
+        elif 0.5 <= p < 0.75:  # Stage 3: Central black spot and peripheral spots
+            stage_progress = (p - 0.5) / 0.25
+            self.distortion_amplitude = 10
+            self.radius = min(self.target_height, self.target_width) // 2
+            self.blur_kernel_size = 31
+            self.large_blur_kernel_size = 0
+            self.contrast_alpha = 1 - 0.3 * stage_progress
+            self.small_spots = True
+            self.central_black_spot = True
+            self.black_spot_size = int(120 * stage_progress)
+            self.fade_area_size = int(190 * stage_progress)
+            self.peripheral_spots = True
+
+        else:  # Stage 4: Large blur and intensified effects
+            stage_progress = (p - 0.75) / 0.25
+            self.distortion_amplitude = 0
+            self.radius = min(self.target_height, self.target_width) // 2
+            self.blur_kernel_size = 0
+            desired_large_blur_size = 35 * stage_progress
+            self.large_blur_kernel_size = self.make_odd_kernel_size(desired_large_blur_size)
+            self.contrast_alpha = 0.7
+            self.small_spots = True
+            self.central_black_spot = True
+            self.black_spot_size = 120 + int(60 * stage_progress)
+            self.fade_area_size = 190
+            self.peripheral_spots = True
+
+        # Update masks with gradual spot appearance and growth
+        # Modified to slow down enlarging: delta_p and delta_p_growth set to 0.1
+        if self.small_spots:
+            self.spot_mask = self.create_spot_mask(self.small_spot_data, p, delta_p=0.1, delta_p_growth=0.1)
+        else:
+            self.spot_mask = None
+
+        if self.central_black_spot:
+            self.generate_black_spot_mask(self.black_spot_size, self.fade_area_size)
+        else:
+            self.black_spot_mask = None
+
+        # Applying the same slow growth to peripheral spots for consistency
+        if self.peripheral_spots:
+            self.peripheral_spot_mask = self.create_spot_mask(self.peripheral_spot_data, p, delta_p=0.1, delta_p_growth=0.1)
+        else:
+            self.peripheral_spot_mask = None
+
+        if p < 0.75:
+            self.precompute_blur_mask()
+
+    def precompute_blur_mask(self):
+        """Precompute blur mask for central blur effect."""
+        h, w = int(self.target_height * self.downscale_factor), int(self.target_width * self.downscale_factor)
+        center_x, center_y = w // 2 + 70, h // 2 + 40
+        y, x = np.ogrid[:h, :w]
+        distance_from_center = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+        self.blur_mask = np.exp(-(distance_from_center ** 2) / (2 * (w // 4) ** 2)).astype(np.float32)
+
+    def generate_black_spot_mask(self, black_spot_size, fade_area_size):
+        """Generate central black spot mask with fade area."""
+        y_indices, x_indices = np.meshgrid(np.arange(self.target_height), np.arange(self.target_width), indexing="ij")
+        distances = np.sqrt((x_indices - self.target_width // 2) ** 2 + (y_indices - self.target_height // 2) ** 2)
+        mask = np.ones((self.target_height, self.target_width), dtype=np.float32)
+        
+        mask[distances <= black_spot_size] = 0  # Fully black core
+        fade_zone = (distances > black_spot_size) & (distances <= black_spot_size + fade_area_size)
+        mask[fade_zone] = (distances[fade_zone] - black_spot_size) / fade_area_size  # Linear fade
+        
+        # Add random extensions for irregularity
+        extension_probability = 0.005
+        random_mask = (np.random.rand(self.target_height, self.target_width) < extension_probability) & (mask > 0.5) & (mask < 1)
+        random_indices = np.column_stack(np.where(random_mask))
+        for y_ext, x_ext in random_indices:
+            blob_radius = np.random.randint(10, 30)
+            cv2.circle(mask, (x_ext, y_ext), blob_radius, 1, -1)
+        
+        self.black_spot_mask = cv2.GaussianBlur(mask.astype(np.float32), (51, 51), 0)
+
+    def apply_effect(self, image, p):
+        """Apply Pathologic Myopia effects based on progression p."""
+        self.update_masks(p)
+        
+        # Distortion (Stages 1-3)
+        if self.distortion_amplitude > 0:
+            h, w = image.shape[:2]
+            center_x, center_y = w // 2, h // 2
+            x, y = np.meshgrid(np.arange(w), np.arange(h))
+            distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+            mask = distance < self.radius
+            fade_factor = (self.radius - distance) / self.radius
+            fade_factor[fade_factor < 0] = 0
+
+            amplitude_x = np.sin(2 * np.pi * (y - center_y) / h * 4) * self.distortion_amplitude
+            amplitude_y = np.cos(2 * np.pi * (x - center_x) / w * 4) * self.distortion_amplitude
+            distortion_x = amplitude_x * fade_factor
+            distortion_y = amplitude_y * fade_factor
+
+            map_x = (x + distortion_x).astype(np.float32)
+            map_y = (y + distortion_y).astype(np.float32)
+            distorted_image = cv2.remap(image, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+            distorted_image[~mask] = image[~mask]
+        else:
+            distorted_image = image
+
+        # Central blur (Stages 1-3)
+        if self.blur_kernel_size > 0:
+            small_image = cv2.resize(distorted_image, None, fx=self.downscale_factor, fy=self.downscale_factor)
+            small_blurred = cv2.GaussianBlur(small_image, (self.blur_kernel_size, self.blur_kernel_size), 0)
+            mask_3d = cv2.merge([self.blur_mask] * 3)
+            blended_small = cv2.convertScaleAbs(small_image * (1 - mask_3d) + small_blurred * mask_3d)
+            final_image = cv2.resize(blended_small, (image.shape[1], image.shape[0]))
+        else:
+            final_image = distorted_image
+
+        # Large blur (Stage 4)
+        if self.large_blur_kernel_size > 0:
+            final_image = cv2.GaussianBlur(final_image, (self.large_blur_kernel_size, self.large_blur_kernel_size), 0)
+
+        # Small black spots (Stage 2+)
+        if self.spot_mask is not None:
+            spot_mask_3d = cv2.merge([self.spot_mask] * 3)
+            final_image = cv2.convertScaleAbs(final_image * (1 - spot_mask_3d))
+
+        # Central black spot (Stage 3+)
+        if self.black_spot_mask is not None:
+            black_spot_3d = cv2.merge([self.black_spot_mask] * 3)
+            final_image = cv2.convertScaleAbs(final_image * black_spot_3d)
+
+        # Peripheral spots (Stage 3+)
+        if self.peripheral_spot_mask is not None:
+            peripheral_spot_3d = cv2.merge([self.peripheral_spot_mask] * 3)
+            final_image = cv2.convertScaleAbs(final_image * (1 - peripheral_spot_3d))
+
+        # Contrast reduction (Stage 3+)
+        if self.contrast_alpha < 1.0:
+            final_image = adjust_contrast(final_image, alpha=self.contrast_alpha, beta=10)
+
+        return final_image
+
+def adjust_contrast(image, alpha, beta):
+    """Adjust image contrast by blending with a gray image."""
+    gray = np.full(image.shape, 128, dtype=np.uint8)
+    return cv2.convertScaleAbs(image * alpha + gray * (1 - alpha) + beta)
+
+def main():
+    """Run the Pathologic Myopia simulation with Pygame."""
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
+    screen_info = pygame.display.Info()
+    screen_w, screen_h = screen_info.current_w, screen_info.current_h
+    
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    
+    target_height = 720
+    target_width = 1280
+    
+    state = PathologicMyopiaState(target_height, target_width)
+    scroll_pos = 0
+    max_scroll = screen_w - THUMB_WIDTH
+    dragging = False
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to capture frame.")
+            break
+        
+        frame_flipped = cv2.flip(frame, 1)
+        if frame_flipped.shape[0] != target_height or frame_flipped.shape[1] != target_width:
+            frame_resized = cv2.resize(frame_flipped, (target_width, target_height))
+        else:
+            frame_resized = frame_flipped
+        
+        p = scroll_pos / max_scroll
+        processed = state.apply_effect(frame_resized, p)
+        
+        rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
+        rgb = cv2.resize(rgb, (screen_w, screen_h))
+        surf = pygame.surfarray.make_surface(np.rot90(rgb))
+        
+        # Draw scrollbar
+        pygame.draw.rect(surf, SCROLLBAR_COLOR, (0, screen_h - SCROLLBAR_HEIGHT, screen_w, SCROLLBAR_HEIGHT))
+        pygame.draw.rect(surf, THUMB_COLOR, (scroll_pos, screen_h - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+        
+        screen.blit(surf, (0, 0))
+        pygame.display.flip()
+        
+        for event in pygame.event.get():
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
+            elif event.type == MOUSEBUTTONDOWN:
+                if screen_h - SCROLLBAR_HEIGHT <= event.pos[1] <= screen_h:
+                    dragging = True
+            elif event.type == MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == MOUSEMOTION and dragging:
+                scroll_pos = max(0, min(event.pos[0] - THUMB_WIDTH // 2, max_scroll))
+    
+    cap.release()
+    pygame.quit()
+
+if __name__ == "__main__":
+    main()
