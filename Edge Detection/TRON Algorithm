@@ -1,0 +1,109 @@
+import cv2
+import numpy as np
+
+def anisotropic_diffusion(img, num_iter=20, delta_t=0.1, K=0.02):
+
+    img = img.copy()
+    for _ in range(num_iter):
+        # Compute differences in four directions (interior pixels only)
+        dN = img[:-2, 1:-1] - img[1:-1, 1:-1]  # North
+        dS = img[2:, 1:-1] - img[1:-1, 1:-1]   # South
+        dE = img[1:-1, 2:] - img[1:-1, 1:-1]   # East
+        dW = img[1:-1, :-2] - img[1:-1, 1:-1]  # West
+        
+        # Compute diffusion coefficients
+        cN = 1 / (1 + (dN / K)**2)
+        cS = 1 / (1 + (dS / K)**2)
+        cE = 1 / (1 + (dE / K)**2)
+        cW = 1 / (1 + (dW / K)**2)
+        
+        # Compute fluxes
+        flux_N = cN * dN
+        flux_S = cS * dS
+        flux_E = cE * dE
+        flux_W = cW * dW
+        
+        # Update interior pixels
+        diffusion_term = flux_N + flux_S + flux_E + flux_W
+        img[1:-1, 1:-1] += delta_t * diffusion_term
+    
+    return img
+
+def tron_algorithm(frame, num_iter=10, delta_t=0.1, K_diffusion=0.02, K_threshold=0.1):
+
+    # Convert BGR to YCrCb color space
+    ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
+    Y, Cr, Cb = cv2.split(ycrcb)
+    
+    # Convert Y channel to float32 [0,1]
+    Y_float = Y.astype(np.float32) / 255.0
+    
+    # Step 1: Simplify the scene with anisotropic diffusion
+    Y_diffused = anisotropic_diffusion(Y_float, num_iter, delta_t, K_diffusion)
+    
+    # Step 2: Extract spatial derivatives using Sobel filters
+    Gx = cv2.Sobel(Y_diffused, cv2.CV_32F, 1, 0, ksize=3)  # Horizontal gradient
+    Gy = cv2.Sobel(Y_diffused, cv2.CV_32F, 0, 1, ksize=3)  # Vertical gradient
+    G = np.sqrt(Gx**2 + Gy**2)  # Gradient magnitude
+    
+    # Normalize gradient to [0,1]
+    G_max = np.max(G)
+    if G_max > 0:
+        G = G / G_max
+    
+    # Step 3: Compute weighting function W
+    W = np.where(G > K_threshold, G, K_threshold)
+    
+    # Convert original frame to float32 [0,1]
+    frame_float = frame.astype(np.float32) / 255.0
+    
+    # Boost the original frame using W (broadcast W across channels)
+    frame_enhanced_float = frame_float * W[:, :, None]
+    
+    # Convert back to uint8 [0,255]
+    frame_enhanced = (frame_enhanced_float * 255).astype(np.uint8)
+    
+    return frame_enhanced
+
+# Main script for video processing
+def process_video(input_path, output_path):
+
+    # Open the input video
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        print("Error: Could not open input video file.")
+        return
+    
+    # Get video properties
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Define the codec and create VideoWriter object
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Use 'mp4v' for MP4 format
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    # Process each frame
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Apply TRON algorithm
+        enhanced_frame = tron_algorithm(frame)
+        
+        # Write the enhanced frame to output video
+        out.write(enhanced_frame)
+    
+    # Release resources
+    cap.release()
+    out.release()
+    print(f"Processing complete. Enhanced video saved to {output_path}")
+
+if __name__ == "__main__":
+    # Specify your input and output video paths
+    input_video_path = r"C:\Users\pc\Downloads\WhatsApp Video 2024-11-30 at 23.04.32_ebe3b33d.mp4"  # Replace with your input video path
+    output_video_path = r"C:\Users\pc\Downloads\TRON.mp4"  # Replace with your output video path
+    
+    # Process the video
+    process_video(input_video_path, output_video_path)
