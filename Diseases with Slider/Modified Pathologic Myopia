@@ -295,7 +295,7 @@ def main():
     screen_info = pygame.display.Info()
     screen_w, screen_h = screen_info.current_w, screen_info.current_h
     
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
@@ -313,14 +313,14 @@ def main():
             print("Failed to capture frame.")
             break
         
-        frame_flipped = cv2.flip(frame, 1)
-        if frame_flipped.shape[0] != target_height or frame_flipped.shape[1] != target_width:
-            frame_resized = cv2.resize(frame_flipped, (target_width, target_height))
-        else:
-            frame_resized = frame_flipped
+        #frame_flipped = cv2.flip(frame, 1)
+        #if frame_flipped.shape[0] != target_height or frame_flipped.shape[1] != target_width:
+        #    frame_resized = cv2.resize(frame_flipped, (target_width, target_height))
+        #else:
+        #    frame_resized = frame_flipped
         
         p = scroll_pos / max_scroll
-        processed = state.apply_effect(frame_resized, p)
+        processed = state.apply_effect(frame, p)
         
         rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
         rgb = cv2.resize(rgb, (screen_w, screen_h))
