@@ -149,7 +149,7 @@ class PathologicMyopiaState:
         elif 0.25 <= p < 0.5:  # Stage 2: Add small black spots and peripheral distortion
             stage_progress = (p - 0.25) / 0.25
             self.distortion_amplitude = 5 + 5 * stage_progress
-            self.peripheral_distortion_amplitude = 5 * stage_progress  # Start peripheral distortion
+            self.peripheral_distortion_amplitude = 2 * stage_progress  # Reduced peripheral distortion
             self.radius = int((min(self.target_height, self.target_width) // 4) + 
                             ((min(self.target_height, self.target_width) // 2 - 
                               min(self.target_height, self.target_width) // 4) * stage_progress))
@@ -164,7 +164,7 @@ class PathologicMyopiaState:
         elif 0.5 <= p < 0.75:  # Stage 3: Central black spot, peripheral spots, and stronger peripheral distortion
             stage_progress = (p - 0.5) / 0.25
             self.distortion_amplitude = 10
-            self.peripheral_distortion_amplitude = 5 + 5 * stage_progress  # Increase peripheral distortion
+            self.peripheral_distortion_amplitude = 2 + 2 * stage_progress  # Reduced peripheral distortion
             self.radius = min(self.target_height, self.target_width) // 2
             self.blur_kernel_size = 31  # Fixed central blur
             self.large_blur_kernel_size = 0
@@ -178,7 +178,7 @@ class PathologicMyopiaState:
         else:  # Stage 4: Large blur and intensified effects with max peripheral distortion
             stage_progress = (p - 0.75) / 0.25
             self.distortion_amplitude = 0
-            self.peripheral_distortion_amplitude = 10  # Max peripheral distortion
+            self.peripheral_distortion_amplitude = 4  # Reduced max peripheral distortion
             self.radius = min(self.target_height, self.target_width) // 2
             self.blur_kernel_size = 31  # Keep central blur active
             desired_large_blur_size = 35 * stage_progress
@@ -317,7 +317,7 @@ def main():
     screen_info = pygame.display.Info()
     screen_w, screen_h = screen_info.current_w, screen_info.current_h
     
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
@@ -335,14 +335,8 @@ def main():
             print("Failed to capture frame.")
             break
         
-        frame_flipped = cv2.flip(frame, 1)
-        if frame_flipped.shape[0] != target_height or frame_flipped.shape[1] != target_width:
-            frame_resized = cv2.resize(frame_flipped, (target_width, target_height))
-        else:
-            frame_resized = frame_flipped
-        
         p = scroll_pos / max_scroll
-        processed = state.apply_effect(frame_resized, p)
+        processed = state.apply_effect(frame, p)
         
         rgb = cv2.cvtColor(processed, cv2.COLOR_BGR2RGB)
         rgb = cv2.resize(rgb, (screen_w, screen_h))
