@@ -1,0 +1,175 @@
+import cv2
+import numpy as np
+
+def anisotropic_diffusion(img, num_iter=20, delta_t=0.1, K=0.02):
+    """
+    Apply anisotropic diffusion to smooth the image while preserving edges.
+    
+    Args:
+        img (ndarray): Input image (float32, range [0,1])
+        num_iter (int): Number of iterations
+        delta_t (float): Time step for diffusion
+        K (float): Edge sensitivity parameter
+    
+    Returns:
+        ndarray: Diffused image
+    """
+    img = img.copy()
+    for _ in range(num_iter):
+        # Compute differences in four directions (interior pixels only)
+        dN = img[:-2, 1:-1] - img[1:-1, 1:-1]  # North
+        dS = img[2:, 1:-1] - img[1:-1, 1:-1]   # South
+        dE = img[1:-1, 2:] - img[1:-1, 1:-1]   # East
+        dW = img[1:-1, :-2] - img[1:-1, 1:-1]  # West
+        
+        # Compute diffusion coefficients
+        cN = 1 / (1 + (dN / K)**2)
+        cS = 1 / (1 + (dS / K)**2)
+        cE = 1 / (1 + (dE / K)**2)
+        cW = 1 / (1 + (dW / K)**2)
+        
+        # Compute fluxes
+        flux_N = cN * dN
+        flux_S = cS * dS
+        flux_E = cE * dE
+        flux_W = cW * dW
+        
+        # Update interior pixels
+        diffusion_term = flux_N + flux_S + flux_E + flux_W
+        img[1:-1, 1:-1] += delta_t * diffusion_term
+    
+    return img
+
+def quantize_luminance(Y, num_bins=4, gradient_map=None, tau_min=0.1, tau_max=0.4, grad_phi=1, omega_phi=10):
+    """
+    Quantize the luminance channel with gradient-based sharpness control.
+    
+    Args:
+        Y (ndarray): Luminance channel (float32, [0,1])
+        num_bins (int): Number of quantization bins
+        gradient_map (ndarray): Gradient magnitude (float32, [0,1])
+        tau_min (float): Minimum gradient threshold
+        tau_max (float): Maximum gradient threshold
+        grad_phi (int): Minimum sharpness
+        omega_phi (int): Maximum sharpness
+    
+    Returns:
+        ndarray: Quantized luminance channel
+    """
+    if gradient_map is None:
+        gradient_map = np.zeros_like(Y)
+    
+    # Clamp gradient to [tau_min, tau_max]
+    G_clamped = np.clip(gradient_map, tau_min, tau_max)
+    
+    # Map clamped gradient to sharpness range [grad_phi, omega_phi]
+    phi_q = grad_phi + (omega_phi - grad_phi) * (G_clamped - tau_min) / (tau_max - tau_min)
+    
+    # Quantization step
+    delta_q = 1.0 / num_bins
+    q_nearest = np.round(Y / delta_q) * delta_q
+    
+    # Apply sharpness control
+    Q = q_nearest + delta_q * np.tanh((Y - q_nearest) / phi_q)
+    
+    return np.clip(Q, 0, 1)
+
+def cartoonization_algorithm(frame, num_iter=20, delta_t=0.1, K_diffusion=0.02, num_bins=4, tau_min=0.1, tau_max=0.4):
+    """
+    Apply the Cartoonization algorithm to a single frame with enhanced cartoon effect.
+    
+    Args:
+        frame (ndarray): Input frame (BGR, uint8)
+        num_iter (int): Number of diffusion iterations
+        delta_t (float): Time step for diffusion
+        K_diffusion (float): Diffusion edge sensitivity
+        num_bins (int): Number of quantization bins
+        tau_min (float): Minimum gradient threshold for edge overlay
+        tau_max (float): Maximum gradient threshold for edge overlay
+    
+    Returns:
+        ndarray: Cartoonized frame (BGR, uint8)
+    """
+    # Convert BGR to YCrCb color space
+    ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
+    Y, Cr, Cb = cv2.split(ycrcb)
+    
+    # Convert Y channel to float32 [0,1]
+    Y_float = Y.astype(np.float32) / 255.0
+    
+    # Step 1: Simplify the scene with anisotropic diffusion
+    Y_diffused = anisotropic_diffusion(Y_float, num_iter, delta_t, K_diffusion)
+    
+    # Step 2: Calculate spatial derivatives using Sobel filters
+    Gx = cv2.Sobel(Y_diffused, cv2.CV_32F, 1, 0, ksize=3)
+    Gy = cv2.Sobel(Y_diffused, cv2.CV_32F, 0, 1, ksize=3)
+    G = np.sqrt(Gx**2 + Gy**2)
+    
+    # Normalize gradient to [0,1]
+    G_max = np.max(G)
+    if G_max > 0:
+        G = G / G_max
+    
+    # Step 3: Quantize the diffused luminance channel
+    Y_quantized = quantize_luminance(Y_diffused, num_bins, G, tau_min, tau_max)
+    
+    # Step 4: Combine with negative gradient map to darken edges
+    G_negative = 1 - G  # Invert gradient for dark edges
+    Y_cartoon = Y_quantized * G_negative  # Darken edges instead of brightening
+    
+    # Scale, round, clip, and convert to uint8
+    Y_cartoon_scaled = np.clip(np.round(Y_cartoon * 255), 0, 255).astype(np.uint8)
+    
+    # Reconstruct the color image
+    ycrcb_cartoon = cv2.merge([Y_cartoon_scaled, Cr, Cb])
+    frame_cartoon = cv2.cvtColor(ycrcb_cartoon, cv2.COLOR_YCrCb2BGR)
+    
+    return frame_cartoon
+
+def process_video(input_path, output_path):
+    """
+    Process a video file with the Cartoonization algorithm and save the result.
+    
+    Args:
+        input_path (str): Path to input video
+        output_path (str): Path to save output video
+    """
+    # Open the input video
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        print("Error: Could not open input video file.")
+        return
+    
+    # Get video properties
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Define the codec and create VideoWriter object
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # MP4 format
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    # Process each frame
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Apply Cartoonization algorithm
+        cartoon_frame = cartoonization_algorithm(frame)
+        
+        # Write the cartoonized frame to output video
+        out.write(cartoon_frame)
+    
+    # Release resources
+    cap.release()
+    out.release()
+    print(f"Processing complete. Cartoonized video saved to {output_path}")
+
+if __name__ == "__main__":
+    # Specify input and output video paths
+    input_video_path = r"C:\Users\pc\Downloads\WhatsApp Video 2024-11-30 at 23.04.32_ebe3b33d.mp4"  # Replace with your input video path
+    output_video_path = "path/to/your/output_video.mp4"  # Replace with your output video path
+    
+    # Process the video
+    process_video(input_video_path, output_video_path)
