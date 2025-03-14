@@ -1,0 +1,206 @@
+import cv2
+import numpy as np
+import pygame
+from pygame.locals import *
+
+# Scrollbar parameters
+SCROLLBAR_HEIGHT = 20
+SCROLLBAR_COLOR = (100, 100, 100)
+THUMB_COLOR = (200, 200, 200)
+THUMB_WIDTH = 40
+
+# Enable GPU acceleration in OpenCV
+cv2.setUseOptimized(True)
+cv2.ocl.setUseOpenCL(True)
+
+# Acute stage functions
+def precompute_distortion_map(shape, x_offset=20, y_offset=-10, sine_frequency=2, cosine_frequency=2, strength=0.8):
+    h, w = shape[:2]
+    center_x, center_y = w // 2 + x_offset, h // 2 + y_offset
+    radius = min(h, w) / 2.0
+    x, y = np.meshgrid(np.arange(w), np.arange(h))
+    distance = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+    fade_factor = np.clip((radius - distance) / radius, 0, 1)
+    amplitude_x = np.sin(2 * np.pi * (y - center_y) / h * sine_frequency) * 10 * strength
+    amplitude_y = np.cos(2 * np.pi * (x - center_x) / w * cosine_frequency) * 10 * strength
+    distortion_x = amplitude_x * fade_factor
+    distortion_y = amplitude_y * fade_factor
+    map_x = (x + distortion_x).astype(np.float32)
+    map_y = (y + distortion_y).astype(np.float32)
+    return map_x, map_y
+
+def apply_central_micropsia(image, x_offset=20, y_offset=-10, radius_ratio=3.5, scaling_factor=0.9):
+    h, w = image.shape[:2]
+    center_x, center_y = int(w // 2 + x_offset), int(h // 2 + y_offset)
+    radius = int(min(h, w) / radius_ratio)
+    x_start, x_end = max(center_x - radius, 0), min(center_x + radius, w)
+    y_start, y_end = max(center_y - radius, 0), min(center_y + radius, h)
+    central_region = image[y_start:y_end, x_start:x_end]
+    scaled_size = (int(central_region.shape[1] * scaling_factor), int(central_region.shape[0] * scaling_factor))
+    scaled_region = cv2.resize(central_region, scaled_size, interpolation=cv2.INTER_LINEAR)
+    blended_region = central_region.copy()
+    start_x = (central_region.shape[1] - scaled_region.shape[1]) // 2
+    start_y = (central_region.shape[0] - scaled_region.shape[0]) // 2
+    blended_region[start_y:start_y + scaled_region.shape[0], start_x:start_x + scaled_region.shape[1]] = scaled_region
+    mask = np.zeros((central_region.shape[0], central_region.shape[1]), dtype=np.float32)
+    scaled_radius = int(radius * scaling_factor * 0.9)
+    cv2.circle(mask, (central_region.shape[1] // 2, central_region.shape[0] // 2), scaled_radius, 1, -1)
+    mask = cv2.GaussianBlur(mask, (71, 71), 30)
+    mask_3d = cv2.merge([mask] * 3)
+    blended_region = (central_region * (1 - mask_3d) + blended_region * mask_3d).astype(np.uint8)
+    result = image.copy()
+    result[y_start:y_end, x_start:x_end] = blended_region
+    return result
+
+# Chronic stage functions
+def generate_static_organic_extensions(mask, h, w, strength):
+    extension_probability = 0.005 * strength
+    random_mask = (np.random.rand(h, w) < extension_probability) & (mask > 0.5) & (mask < 1)
+    random_indices = np.column_stack(np.where(random_mask))
+    for y_ext, x_ext in random_indices:
+        blob_radius = np.random.randint(10, 30)
+        cv2.circle(mask, (x_ext, y_ext), blob_radius, 1, -1)
+    return cv2.GaussianBlur(mask.astype(np.float32), (51, 51), 0)
+
+def apply_subtle_distortion(image, center_x, center_y, distortion_radius, strength=1.0):
+    rows, cols = image.shape[:2]
+    amplitude = 2 * strength
+    wavelength = 100
+    shift_x = (amplitude * np.sin(2 * np.pi * np.arange(rows)[:, None] / wavelength)).astype(int)
+    shift_y = (amplitude * np.cos(2 * np.pi * np.arange(cols)[None, :] / wavelength)).astype(int)
+    y_indices, x_indices = np.meshgrid(np.arange(rows), np.arange(cols), indexing='ij')
+    distances = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
+    within_radius = distances <= distortion_radius
+    new_x = np.clip(x_indices + shift_x * within_radius, 0, cols - 1)
+    new_y = np.clip(y_indices + shift_y * within_radius, 0, rows - 1)
+    distorted_image = image.copy()
+    distorted_image[within_radius] = image[new_y[within_radius], new_x[within_radius]]
+    return distorted_image
+
+def apply_progressive_cscr_effect(image, progression, map_x, map_y):
+    h, w = image.shape[:2]
+    center_x, center_y = w // 2, h // 2
+    
+    # Define phases
+    if progression <= 0.33:  # No symptoms
+        acute_strength = 0
+        chronic_strength = 0
+    elif 0.33 < progression <= 0.66:  # Acute stage
+        acute_strength = np.interp(progression, [0.33, 0.66], [0, 1])
+        chronic_strength = 0
+    else:  # Chronic stage overlaying acute
+        acute_strength = 1
+        chronic_strength = np.interp(progression, [0.66, 1.0], [0, 1])
+    
+    # Start with original image
+    result = image.copy()
+    
+    # Apply acute stage effects
+    if acute_strength > 0:
+        # Apply distortion
+        distorted = cv2.remap(result, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+        
+        # Adjust radius_ratio based on progression
+        # As progression increases, radius_ratio decreases, making the circle larger
+        radius_ratio = np.interp(progression, [0.33, 1.0], [3.5, 2.0])  # Adjust these values as needed
+        
+        # Apply micropsia with dynamic radius_ratio
+        micropsia = apply_central_micropsia(distorted, scaling_factor=np.interp(acute_strength, [0, 1], [1.0, 0.9]), radius_ratio=radius_ratio)
+        
+        # Apply central blur
+        radius = int(min(h, w) / radius_ratio)  # Use the dynamic radius_ratio
+        x_start, x_end = max(center_x - radius, 0), min(center_x + radius, w)
+        y_start, y_end = max(center_y - radius, 0), min(center_y + radius, h)
+        central_region = micropsia[y_start:y_end, x_start:x_end]
+        blurred_region = cv2.GaussianBlur(central_region, (15, 15), acute_strength * 10)
+        
+        # Create a circular mask for blending
+        mask = np.zeros((central_region.shape[0], central_region.shape[1]), dtype=np.float32)
+        cv2.circle(mask, (central_region.shape[1] // 2, central_region.shape[0] // 2), radius, 1, -1)
+        mask = cv2.GaussianBlur(mask, (71, 71), 30)
+        mask_3d = cv2.merge([mask] * 3)
+        
+        # Blend blurred region back
+        blended_region = (central_region * (1 - mask_3d) + blurred_region * mask_3d).astype(np.uint8)
+        result = micropsia.copy()
+        result[y_start:y_end, x_start:x_end] = blended_region
+    
+    # Return the result (original image if no effects are applied)
+    return result
+def main():
+    # Initialize Pygame
+    pygame.init()
+    screen = pygame.display.set_mode((0, 0), FULLSCREEN)
+    screen_info = pygame.display.Info()
+    screen_w, screen_h = screen_info.current_w, screen_info.current_h
+    pygame.display.set_caption("CSCR Progression Simulation")
+    
+    # Initialize webcam
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: Could not open webcam.")
+        pygame.quit()
+        return
+    
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    
+    # Precompute distortion map
+    map_x, map_y = precompute_distortion_map((screen_h, screen_w))
+    
+    # Scrollbar variables
+    scroll_pos = 0
+    max_scroll = screen_w - THUMB_WIDTH
+    dragging = False
+    last_pos = 0
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Failed to capture frame.")
+            continue  # Skip this iteration if frame capture fails
+        
+        frame_resized = cv2.resize(frame, (screen_w, screen_h))
+        progression = scroll_pos / max_scroll  # 0 to 1
+        
+        # Apply progressive effect
+        processed_frame = apply_progressive_cscr_effect(frame_resized, progression, map_x, map_y)
+        
+        # Check if processed_frame is valid
+        if processed_frame is None or processed_frame.size == 0:
+            print("Error: Processed frame is empty.")
+            continue  # Skip this iteration if processed_frame is invalid
+        
+        # Convert to RGB for Pygame
+        rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+        surf = pygame.surfarray.make_surface(np.rot90(rgb))
+        
+        # Draw scrollbar
+        pygame.draw.rect(surf, SCROLLBAR_COLOR, (0, screen_h - SCROLLBAR_HEIGHT, screen_w, SCROLLBAR_HEIGHT))
+        pygame.draw.rect(surf, THUMB_COLOR, (scroll_pos, screen_h - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+        
+        screen.blit(surf, (0, 0))
+        pygame.display.flip()
+        
+        # Handle events
+        for event in pygame.event.get():
+            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
+            elif event.type == MOUSEBUTTONDOWN:
+                if (screen_h - SCROLLBAR_HEIGHT <= event.pos[1] <= screen_h and 
+                    scroll_pos <= event.pos[0] <= scroll_pos + THUMB_WIDTH):
+                    dragging = True
+                    last_pos = event.pos[0]
+            elif event.type == MOUSEBUTTONUP:
+                dragging = False
+            elif event.type == MOUSEMOTION and dragging:
+                delta_x = event.pos[0] - last_pos
+                scroll_pos = max(0, min(scroll_pos + delta_x, max_scroll))
+                last_pos = event.pos[0]
+    
+    cap.release()
+    pygame.quit()
+if __name__ == "__main__":
+    main()
