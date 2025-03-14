@@ -1,0 +1,145 @@
+import cv2
+import numpy as np
+import time
+import pygame
+from pygame.locals import QUIT, KEYDOWN, K_ESCAPE
+from threading import Thread, Event
+from queue import Queue
+
+# Define the glare and halo effect function
+def apply_glare_and_halo(image, mask, intensity, max_blur_radius=50, power=3):
+    """
+    Apply glare and halo effect to the bright areas of the image.
+
+    Parameters:
+    - image: Input RGB image.
+    - mask: Grayscale mask of bright areas (0 or 255).
+    - intensity: Effect strength [0, 1], controlled by the scrollbar.
+    - max_blur_radius: Maximum blur radius for the halo size.
+    - power: Exponent to control the fall-off of the halo effect.
+    
+    Returns:
+    - final_image: Image with the halo effect applied.
+    """
+    if intensity > 0:
+        # Increase blur radius for a more pronounced halo
+        blur_radius = intensity * max_blur_radius
+        blurred_mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=blur_radius, sigmaY=blur_radius)
+        
+        # Normalize and apply power transformation to concentrate the halo
+        blurred_mask = (blurred_mask / 255.0) ** power
+        
+        # Increase the brightness of the halo layer
+        halo_layer = (np.ones_like(image) * 255 * blurred_mask[:, :, np.newaxis]).astype(np.uint8)
+        
+        # Blend the halo layer with the original image using a higher weight
+        final_image = cv2.addWeighted(image, 1, halo_layer, intensity * 1.5, 0)  # Increased weight for more glare
+    else:
+        final_image = image
+    return final_image
+
+def get_scaled_dimensions(original_size, target_size):
+    original_width, original_height = original_size
+    target_width, target_height = target_size
+    scale_factor = min(target_width / original_width, target_height / original_height)
+    new_width = int(original_width * scale_factor)
+    new_height = int(original_height * scale_factor)
+    x_pos = (target_width - new_width) // 2
+    y_pos = (target_height - new_height) // 2
+    return (new_width, new_height), (x_pos, y_pos)
+
+def video_reader(cap, frame_queue, stop_event):
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            stop_event.set()
+            break
+        frame_queue.put(frame)
+
+def realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720)):
+    pygame.init()
+    pygame.display.set_caption("Glare and Halo Simulation")
+    screen_width, screen_height = resolution
+    screen = pygame.display.set_mode((screen_width, screen_height), pygame.FULLSCREEN)
+
+    cap = cv2.VideoCapture(webcam_index)
+    if not cap.isOpened():
+        print("Error: Unable to access webcam.")
+        pygame.quit()
+        return
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+
+    frame_queue = Queue(maxsize=10)
+    stop_event = Event()
+    reader_thread = Thread(target=video_reader, args=(cap, frame_queue, stop_event))
+    reader_thread.start()
+
+    SCROLLBAR_HEIGHT = 20
+    SCROLLBAR_COLOR = (100, 100, 100)
+    THUMB_COLOR = (200, 200, 200)
+    THUMB_WIDTH = 40
+    scroll_pos = 0
+    max_scroll = screen_width - THUMB_WIDTH
+    dragging = False
+
+    print("Press 'ESC' or close the window to stop the simulation.")
+    clock = pygame.time.Clock()
+
+    try:
+        while True:
+            for event in pygame.event.get():
+                if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                    raise KeyboardInterrupt
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    mouse_x, mouse_y = event.pos
+                    if screen_height - SCROLLBAR_HEIGHT <= mouse_y <= screen_height:
+                        dragging = True
+                elif event.type == pygame.MOUSEBUTTONUP:
+                    dragging = False
+                elif event.type == pygame.MOUSEMOTION and dragging:
+                    mouse_x, mouse_y = event.pos
+                    scroll_pos = max(0, min(mouse_x - THUMB_WIDTH // 2, max_scroll))
+
+            if not frame_queue.empty():
+                frame = frame_queue.get()
+                start_time = time.time()
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                gray_image = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+                # Decreased threshold as per your suggestion (adjustable)
+                threshold_value = 220  # Try 180 instead of 200
+                _, bright_areas = cv2.threshold(gray_image, threshold_value, 255, cv2.THRESH_BINARY)
+
+                intensity = scroll_pos / max_scroll
+                final_frame = apply_glare_and_halo(frame_rgb, bright_areas, intensity, power=2)
+
+                original_size = (final_frame.shape[1], final_frame.shape[0])
+                scaled_size, position = get_scaled_dimensions(original_size, (screen_width, screen_height))
+                frame_resized = cv2.resize(final_frame, scaled_size, interpolation=cv2.INTER_AREA)
+
+                frame_surface = pygame.surfarray.make_surface(np.rot90(frame_resized))
+                screen.fill((0, 0, 0))
+                screen.blit(frame_surface, position)
+                pygame.draw.rect(screen, SCROLLBAR_COLOR, (0, screen_height - SCROLLBAR_HEIGHT, screen_width, SCROLLBAR_HEIGHT))
+                pygame.draw.rect(screen, THUMB_COLOR, (scroll_pos, screen_height - SCROLLBAR_HEIGHT, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+                pygame.display.flip()
+
+                processing_time = time.time() - start_time
+                fps = 1 / processing_time if processing_time > 0 else 0
+                pygame.display.set_caption(f"Glare and Halo Simulation - FPS: {fps:.2f}")
+
+            clock.tick(60)
+
+    except KeyboardInterrupt:
+        print("\nExiting real-time video processing.")
+
+    finally:
+        stop_event.set()
+        reader_thread.join()
+        cap.release()
+        pygame.quit()
+
+if __name__ == "__main__":
+    realtime_video_processing_pygame(webcam_index=0, resolution=(1280, 720))
