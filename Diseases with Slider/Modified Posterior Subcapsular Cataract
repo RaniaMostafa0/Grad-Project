@@ -33,7 +33,7 @@ def apply_glare_and_halo(image, mask, intensity, max_blur_radius=50, power=3):
         halo_layer = (np.ones_like(image) * 255 * blurred_mask[:, :, np.newaxis]).astype(np.uint8)
         
         # Blend the halo layer with the original image using a higher weight
-        final_image = cv2.addWeighted(image, 1, halo_layer, intensity * 1.5, 0)  # Increased weight for more glare
+        final_image = cv2.addWeighted(image, 1, halo_layer, intensity * 0.7, 0)  # Increased weight for more glare
     else:
         final_image = image
     return final_image
