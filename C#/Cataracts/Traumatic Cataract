@@ -1,0 +1,97 @@
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCvSharp;
+using OpenCvSharp.Unity;
+
+public class RealTimeGaussianBlur : MonoBehaviour
+{
+    public RawImage displayImage; // Assign in Unity Inspector (UI RawImage)
+    public GameObject webcamSphere; // Assign in Unity Inspector (3D Sphere)
+    public Button startButton; // Assign in Unity Inspector (Start Button)
+    
+    private WebCamTexture webcamTexture;
+    private Renderer sphereRenderer;
+    private Texture2D outputTexture;
+    private Mat frameMat, blurredFrame;
+    private bool effectActive = false;
+
+    void Start()
+{
+    if (startButton == null)
+    {
+        startButton = GameObject.Find("StartButton").GetComponent<Button>(); // Auto-find the button
+    }
+
+    if (startButton != null)
+    {
+        startButton.onClick.AddListener(OnStartButtonClick);
+    }
+    else
+    {
+        Debug.LogError("Start Button is still missing! Check Hierarchy.");
+    }
+}
+
+
+    void OnStartButtonClick()
+    {
+        if (!effectActive)
+        {
+            StartGaussianBlurEffect();
+            effectActive = true;
+
+            // Hide UI elements for immersion
+            displayImage.gameObject.SetActive(false); // Hide Webcam Display
+            startButton.gameObject.SetActive(false); // Hide Start Button
+        }
+    }
+
+    void StartGaussianBlurEffect()
+    {
+        WebCamDevice[] devices = WebCamTexture.devices;
+        webcamTexture = new WebCamTexture(devices.Length > 1 ? devices[1].name : devices[0].name);
+        webcamTexture.Play();
+
+        outputTexture = new Texture2D(webcamTexture.width, webcamTexture.height, TextureFormat.RGBA32, false);
+
+        if (webcamSphere != null)
+        {
+            sphereRenderer = webcamSphere.GetComponent<Renderer>();
+            sphereRenderer.material.SetTexture("_BaseMap", outputTexture);
+        }
+
+        // Pre-allocate Mat objects to prevent GC lag
+        frameMat = new Mat(webcamTexture.height, webcamTexture.width, MatType.CV_8UC3);
+        blurredFrame = new Mat();
+
+        effectActive = true;
+    }
+
+    void Update()
+    {
+        if (effectActive && webcamTexture.didUpdateThisFrame)
+        {
+            ProcessFrame();
+        }
+    }
+
+    void ProcessFrame()
+    {
+        // Efficiently copy texture to Mat
+        var colors = webcamTexture.GetPixels32();
+        outputTexture.SetPixels32(colors);
+        outputTexture.Apply();
+
+        // Convert Texture2D to OpenCV Mat (fast)
+        frameMat = OpenCvSharp.Unity.TextureToMat(outputTexture);
+
+        // Apply Gaussian Blur (Optimized kernel size)
+        Cv2.GaussianBlur(frameMat, blurredFrame, new Size(15, 15), 0);
+
+        // Convert Mat back to Texture
+        OpenCvSharp.Unity.MatToTexture(blurredFrame, outputTexture);
+
+        // Update UI and Sphere textures
+        if (webcamSphere != null) sphereRenderer.material.SetTexture("_BaseMap", outputTexture);
+    }
+}
