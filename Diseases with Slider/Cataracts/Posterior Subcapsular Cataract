@@ -7,7 +7,7 @@ from threading import Thread, Event
 from queue import Queue
 
 # Define the glare and halo effect function
-def apply_glare_and_halo(image, mask, intensity, max_blur_radius=30, power=2):
+def apply_glare_and_halo(image, mask, intensity, max_blur_radius=50, power=3):
     """
     Apply glare and halo effect to the bright areas of the image.
 
@@ -22,12 +22,18 @@ def apply_glare_and_halo(image, mask, intensity, max_blur_radius=30, power=2):
     - final_image: Image with the halo effect applied.
     """
     if intensity > 0:
+        # Increase blur radius for a more pronounced halo
         blur_radius = intensity * max_blur_radius
         blurred_mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=blur_radius, sigmaY=blur_radius)
+        
         # Normalize and apply power transformation to concentrate the halo
         blurred_mask = (blurred_mask / 255.0) ** power
+        
+        # Increase the brightness of the halo layer
         halo_layer = (np.ones_like(image) * 255 * blurred_mask[:, :, np.newaxis]).astype(np.uint8)
-        final_image = cv2.addWeighted(image, 1, halo_layer, intensity, 0)
+        
+        # Blend the halo layer with the original image using a higher weight
+        final_image = cv2.addWeighted(image, 1, halo_layer, intensity * 0.7, 0)  # Increased weight for more glare
     else:
         final_image = image
     return final_image
