@@ -1,0 +1,99 @@
+import cv2
+import torch
+import numpy as np
+import pygame
+from pygame.locals import *
+
+# Initialize Pygame
+pygame.init()
+
+# Set up the full-screen display at 720p resolution (1280x720)
+screen = pygame.display.set_mode((1280, 720), FULLSCREEN)
+pygame.display.set_caption("Depth-based Blur with Pygame")
+
+# Load the MiDaS model
+midas = torch.hub.load("intel-isl/MiDaS", "MiDaS_small")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+midas.to(device)
+midas.eval()
+
+# Load the transformation for MiDaS
+midas_transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+transform = midas_transforms.small_transform
+
+# Initialize the webcam
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    exit()
+
+# Main loop
+running = True
+while running:
+    # Handle Pygame events (e.g., quit or 'q' key press)
+    for event in pygame.event.get():
+        if event.type == QUIT or (event.type == KEYDOWN and event.key == K_q):
+            running = False
+
+    # Capture frame from webcam
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Could not read frame.")
+        break
+
+    # Resize frame to 720p (1280x720) for consistency
+    frame = cv2.resize(frame, (1280, 720))
+
+    # Convert frame to RGB (MiDaS expects RGB input)
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Prepare input for MiDaS
+    input_batch = transform(img).to(device)
+
+    # Predict depth map
+    with torch.no_grad():
+        prediction = midas(input_batch)
+        # Resize depth map to match frame size
+        prediction = torch.nn.functional.interpolate(
+            prediction.unsqueeze(1),
+            size=img.shape[:2],
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze()
+
+    # Convert depth map to numpy array
+    depth_map = prediction.cpu().numpy()
+
+    # Normalize depth map to [0, 1] (higher values = closer objects)
+    depth_map = cv2.normalize(depth_map, None, 0, 1, norm_type=cv2.NORM_MINMAX)
+
+    # Create a blurred version of the frame
+    blurred = cv2.GaussianBlur(frame, (21, 21), 0)
+
+    # Convert frames to float32 for blending
+    frame_float = frame.astype(np.float32)
+    blurred_float = blurred.astype(np.float32)
+
+    # Blend original and blurred frames based on depth
+    alpha = depth_map[..., np.newaxis]  # Add channel dimension for broadcasting
+    output = alpha * frame_float + (1 - alpha) * blurred_float
+
+    # Convert back to uint8 for display
+    output = output.astype(np.uint8)
+
+    # Convert BGR to RGB for Pygame
+    output_rgb = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
+
+    # Convert to Pygame surface
+    pygame_surface = pygame.surfarray.make_surface(output_rgb.swapaxes(0, 1))
+
+    # Blit the surface to the screen
+    screen.blit(pygame_surface, (0, 0))
+
+    # Update the display
+    pygame.display.flip()
+
+# Release resources
+cap.release()
+pygame.quit()
