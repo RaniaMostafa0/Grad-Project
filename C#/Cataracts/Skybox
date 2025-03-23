@@ -1,0 +1,48 @@
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCvSharp;
+
+public class ButtonController : MonoBehaviour
+{
+    public Material skyboxMaterial; // Assign this in Unity Inspector (WebcamSkybox)
+    public RawImage displayImage; // UI for debugging
+    public Button startButton; // Start Button
+    private WebCamTexture webcamTexture;
+    private bool effectActive = false;
+
+    void Start()
+    {
+        startButton.onClick.AddListener(OnStartButtonClick);
+    }
+
+    void OnStartButtonClick()
+    {
+        if (!effectActive)
+        {
+            StartCataractEffect();
+            effectActive = true;
+            // Hide UI elements for immersion
+            displayImage.gameObject.SetActive(false);
+            startButton.gameObject.SetActive(false);
+        }
+    }
+
+    void StartCataractEffect()
+    {
+        // Initialize Webcam
+        WebCamDevice[] devices = WebCamTexture.devices;
+        webcamTexture = new WebCamTexture(devices.Length > 1 ? devices[1].name : devices[0].name);
+        webcamTexture.Play();
+
+        // Ensure Skybox Material is Assigned
+        if (RenderSettings.skybox != null)
+        {
+            RenderSettings.skybox.SetTexture("_MainTex", webcamTexture);
+            Debug.Log("Skybox Updated with Webcam Feed.");
+        }
+        else
+        {
+            Debug.LogError("No Skybox Material Found! Assign WebcamSkybox in Lighting Settings.");
+        }
+    }
+}
