@@ -39,7 +39,6 @@ public class RealTimeWebcamDisplay : MonoBehaviour
             effectActive = true;
 
             // Hide UI elements for immersion
-            displayImage.gameObject.SetActive(false); // Hide Webcam Display
             startButton.gameObject.SetActive(false); // Hide Start Button
         }
     }
