@@ -1,0 +1,120 @@
+using UnityEngine;
+using UnityEngine.UI;
+
+public class RealTimeWebcamDisplay : MonoBehaviour
+{
+    public RawImage displayImage; // Assign in Unity Inspector (UI RawImage)
+    public GameObject webcamCube; // Assign in Unity Inspector (3D Cube)
+    public Button startButton; // Assign in Unity Inspector (Start Button)
+    public Camera mainCamera; // Assign in Unity Inspector (Main Camera)
+
+    private WebCamTexture webcamTexture;
+    private Renderer cubeRenderer;
+    private bool effectActive = false;
+
+    // To reduce the frequency of updates, we'll only update every few frames
+    private int frameCounter = 0;
+    private const int frameSkip = 2; // Adjust to control how often you update the cube texture (e.g., every 2nd frame)
+
+    void Start()
+    {
+        if (startButton == null)
+        {
+            startButton = GameObject.Find("StartButton").GetComponent<Button>(); // Auto-find the button
+        }
+
+        if (startButton != null)
+        {
+            startButton.onClick.AddListener(OnStartButtonClick);
+        }
+        else
+        {
+            Debug.LogError("Start Button is still missing! Check Hierarchy.");
+        }
+
+        if (mainCamera == null)
+        {
+            mainCamera = Camera.main; // Default to the main camera if not assigned
+        }
+    }
+
+    void OnStartButtonClick()
+    {
+        if (!effectActive)
+        {
+            StartWebcamDisplay();
+            effectActive = true;
+
+            // Hide UI elements for immersion
+            startButton.gameObject.SetActive(false); // Hide Start Button
+        }
+    }
+
+    void StartWebcamDisplay()
+    {
+        WebCamDevice[] devices = WebCamTexture.devices;
+        webcamTexture = new WebCamTexture(devices.Length > 1 ? devices[1].name : devices[0].name);
+
+        // Set webcam resolution for higher quality but balanced performance
+        webcamTexture.requestedWidth = 1280; // Adjust resolution (lower for performance)
+        webcamTexture.requestedHeight = 720;
+        webcamTexture.requestedFPS = 30; // Lower FPS for performance
+        webcamTexture.Play();
+
+        if (displayImage != null)
+        {
+            // Assign the webcam texture directly to the RawImage component
+            displayImage.texture = webcamTexture;
+        }
+
+        if (webcamCube != null)
+        {
+            cubeRenderer = webcamCube.GetComponent<Renderer>();
+            cubeRenderer.material.mainTexture = webcamTexture;
+        }
+
+        effectActive = true;
+
+        // Adjust camera settings for better quality and fix zoom
+        AdjustCameraSettings();
+    }
+
+    void AdjustCameraSettings()
+    {
+        if (mainCamera != null)
+        {
+            // Adjust the camera's Field of View (FOV) to prevent zooming
+            mainCamera.fieldOfView = 90; // You can adjust this value as needed
+
+            // Set the Near and Far Clip Planes to avoid clipping
+            mainCamera.nearClipPlane = 0.1f;
+            mainCamera.farClipPlane = 1000f;
+        }
+    }
+
+    void Update()
+    {
+        if (effectActive)
+        {
+            // Skip frames based on frameSkip value
+            frameCounter++;
+            if (frameCounter % frameSkip == 0)
+            {
+                // Apply the webcam texture to the cube and RawImage (only update every frameSkip frames)
+                if (webcamTexture.didUpdateThisFrame)
+                {
+                    // Update RawImage and Cube only once every `frameSkip` frames to improve performance
+                    if (displayImage != null)
+                    {
+                        displayImage.texture = webcamTexture;
+                    }
+
+                    if (webcamCube != null)
+                    {
+                        cubeRenderer.material.mainTexture = webcamTexture;
+                    }
+                }
+            }
+        }
+    }
+}
