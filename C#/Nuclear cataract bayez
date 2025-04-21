@@ -1,0 +1,83 @@
+using UnityEngine;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+using System.Collections.Generic;
+
+public class NuclearCataract : MonoBehaviour
+{
+    private UIManager ui;
+    private Mat processedMat;
+    private float updateInterval = 1f / 30f;
+    private float lastUpdateTime = 0f;
+
+    void Start()
+    {
+        ui = GetComponent<UIManager>();
+        processedMat = new Mat(ui.webcamMat.rows(), ui.webcamMat.cols(), CvType.CV_8UC4);
+    }
+
+    void Update()
+    {
+        if (ui.webcamTexture == null || !ui.webcamTexture.didUpdateThisFrame) return;
+
+        if (Time.time - lastUpdateTime >= updateInterval)
+        {
+            Utils.webCamTextureToMat(ui.webcamTexture, ui.webcamMat);
+            float intensity = ui.intensitySlider != null ? ui.intensitySlider.value : 0.6f;
+
+            ApplyNuclearCataractEffect(ui.webcamMat, processedMat, intensity);
+            Utils.matToTexture2D(processedMat, ui.outputTexture);
+
+            lastUpdateTime = Time.time;
+        }
+    }
+
+    void ApplyNuclearCataractEffect(Mat input, Mat output, float intensity)
+    {
+        int blurStrength = Mathf.Clamp((int)(intensity * 20), 1, 25);
+        if (blurStrength % 2 == 0) blurStrength += 1;
+
+        // Apply Gaussian blur
+        Mat blurred = new Mat();
+        Imgproc.GaussianBlur(input, blurred, new Size(blurStrength, blurStrength), 5);
+
+        // Apply yellow tint
+        Mat yellowTint = new Mat();
+        blurred.convertTo(yellowTint, CvType.CV_32FC3);
+        Scalar yellowScalar = new Scalar(1.0 - 0.5 * intensity, 1.0, 1.0); // Tinting RGB channels
+        Core.multiply(yellowTint, yellowScalar, yellowTint);
+        Core.min(yellowTint, new Scalar(255, 255, 255), yellowTint);
+        yellowTint.convertTo(yellowTint, CvType.CV_8UC3);
+
+        // Convert RGB to RGBA
+        Mat bgrWithAlpha = new Mat();
+        Imgproc.cvtColor(yellowTint, bgrWithAlpha, Imgproc.COLOR_RGB2RGBA);
+
+        // Set alpha channel to fully opaque
+        List<Mat> channels = new List<Mat>();
+        Core.split(bgrWithAlpha, channels);
+        if (channels.Count == 4)
+        {
+            channels[3].setTo(new Scalar(255)); // Set full opacity
+            Core.merge(channels, bgrWithAlpha);
+        }
+
+        // Apply contrast and brightness
+        float contrastFactor = 1.0f - 0.35f * intensity;
+        float brightness = 30 * intensity;
+        bgrWithAlpha.convertTo(output, -1, contrastFactor, brightness);
+
+        // Cleanup
+        blurred.Dispose();
+        yellowTint.Dispose();
+        foreach (var ch in channels) ch.Dispose();
+        bgrWithAlpha.Dispose();
+    }
+
+
+    void OnDestroy()
+    {
+        if (processedMat != null) processedMat.Dispose();
+    }
+}
