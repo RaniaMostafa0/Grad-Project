@@ -35,44 +35,58 @@ public class NuclearCataract : MonoBehaviour
 
     void ApplyNuclearCataractEffect(Mat input, Mat output, float intensity)
     {
+        // 1. Apply Gaussian Blur
         int blurStrength = Mathf.Clamp((int)(intensity * 20), 1, 25);
         if (blurStrength % 2 == 0) blurStrength += 1;
 
-        // Apply Gaussian blur
         Mat blurred = new Mat();
         Imgproc.GaussianBlur(input, blurred, new Size(blurStrength, blurStrength), 5);
 
-        // Apply yellow tint
-        Mat yellowTint = new Mat();
-        blurred.convertTo(yellowTint, CvType.CV_32FC3);
-        Scalar yellowScalar = new Scalar(1.0 - 0.5 * intensity, 1.0, 1.0); // Tinting RGB channels
-        Core.multiply(yellowTint, yellowScalar, yellowTint);
-        Core.min(yellowTint, new Scalar(255, 255, 255), yellowTint);
-        yellowTint.convertTo(yellowTint, CvType.CV_8UC3);
+        // 2. Apply Yellow Tint (simulate reduction of blue channel)
+        Mat tinted = new Mat();
+        blurred.convertTo(tinted, CvType.CV_32FC3);
 
-        // Convert RGB to RGBA
-        Mat bgrWithAlpha = new Mat();
-        Imgproc.cvtColor(yellowTint, bgrWithAlpha, Imgproc.COLOR_RGB2RGBA);
-
-        // Set alpha channel to fully opaque
         List<Mat> channels = new List<Mat>();
-        Core.split(bgrWithAlpha, channels);
-        if (channels.Count == 4)
+        Core.split(tinted, channels);
+
+        if (channels.Count >= 3)
         {
-            channels[3].setTo(new Scalar(255)); // Set full opacity
-            Core.merge(channels, bgrWithAlpha);
+            // Reduce Blue channel based on intensity
+            Core.multiply(channels[0], new Scalar(1.0 - 0.5 * intensity), channels[0]);
         }
 
-        // Apply contrast and brightness
-        float contrastFactor = 1.0f - 0.35f * intensity;
-        float brightness = 30 * intensity;
-        bgrWithAlpha.convertTo(output, -1, contrastFactor, brightness);
+        Core.merge(channels, tinted);
+        Core.min(tinted, new Scalar(255, 255, 255), tinted);
+        tinted.convertTo(tinted, CvType.CV_8UC3);
 
-        // Cleanup
+        // 3. Contrast and Brightness Adjustment
+        float contrastFactor = 1.0f - 0.35f * intensity;
+        float brightness = 30f * intensity;
+        Mat finalResult = new Mat();
+        tinted.convertTo(finalResult, -1, contrastFactor, brightness);
+
+        // 4. Convert to RGBA
+        Mat rgba = new Mat();
+        Imgproc.cvtColor(finalResult, rgba, Imgproc.COLOR_RGB2RGBA);
+
+        // Set full opacity
+        List<Mat> rgbaChannels = new List<Mat>();
+        Core.split(rgba, rgbaChannels);
+        if (rgbaChannels.Count == 4)
+        {
+            rgbaChannels[3].setTo(new Scalar(255));
+            Core.merge(rgbaChannels, rgba);
+        }
+
+        rgba.copyTo(output);
+
+        // Clean up
         blurred.Dispose();
-        yellowTint.Dispose();
+        tinted.Dispose();
+        finalResult.Dispose();
         foreach (var ch in channels) ch.Dispose();
-        bgrWithAlpha.Dispose();
+        foreach (var ch in rgbaChannels) ch.Dispose();
+        rgba.Dispose();
     }
 
 
