@@ -12,6 +12,7 @@ public class RealTimeWebcamDisplay : MonoBehaviour
     public Camera mainCamera;                 // Assign in Inspector
     public GameObject backgroundImage;        // Assign in Inspector
     public Slider intensitySlider;            // Assign in Inspector (UI Slider)
+    public Text valueLabel;                   // Optional: Assign in Inspector to show slider value
 
     private WebCamTexture webcamTexture;
     private Renderer cubeRenderer;
@@ -122,6 +123,28 @@ public class RealTimeWebcamDisplay : MonoBehaviour
 
     void Update()
     {
+        // Handle keyboard arrow input to control the slider
+        if (intensitySlider != null && intensitySlider.gameObject.activeInHierarchy)
+        {
+            float step = 0.01f; // Slider step size
+
+            if (Input.GetKey(KeyCode.LeftArrow))
+            {
+                intensitySlider.value = Mathf.Clamp01(intensitySlider.value - step);
+            }
+            else if (Input.GetKey(KeyCode.RightArrow))
+            {
+                intensitySlider.value = Mathf.Clamp01(intensitySlider.value + step);
+            }
+
+            // Optional: Update the text label showing the slider value
+            if (valueLabel != null)
+            {
+                valueLabel.text = $"Intensity: {intensitySlider.value:0.00}";
+            }
+        }
+
+        // Process frame
         if (!effectActive || webcamTexture == null || !webcamTexture.didUpdateThisFrame) return;
 
         if (Time.time - lastUpdateTime >= updateInterval)
