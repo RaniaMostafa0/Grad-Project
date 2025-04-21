@@ -1,0 +1,88 @@
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.UnityUtils;
+
+public class UIManager : MonoBehaviour
+{
+    public RawImage displayImage;
+    public GameObject webcamCube;
+    public Button corticalButton;
+    public Camera mainCamera;
+    public GameObject backgroundImage;
+    public Slider intensitySlider;
+    public Text valueLabel;
+
+    [HideInInspector] public WebCamTexture webcamTexture;
+    [HideInInspector] public Texture2D outputTexture;
+    [HideInInspector] public Mat webcamMat;
+
+    void Start()
+    {
+        if (mainCamera == null)
+            mainCamera = Camera.main;
+
+        corticalButton.onClick.AddListener(() =>
+        {
+            corticalButton.gameObject.SetActive(false);
+            backgroundImage.SetActive(false);
+            intensitySlider.gameObject.SetActive(true);
+
+            gameObject.AddComponent<CorticalCataract>();
+        });
+
+        StartWebcam();
+    }
+
+    void StartWebcam()
+    {
+        WebCamDevice[] devices = WebCamTexture.devices;
+        webcamTexture = new WebCamTexture(devices.Length > 1 ? devices[1].name : devices[0].name);
+        webcamTexture.requestedWidth = 854;
+        webcamTexture.requestedHeight = 480;
+        webcamTexture.requestedFPS = 30;
+        webcamTexture.Play();
+
+        outputTexture = new Texture2D(webcamTexture.width, webcamTexture.height, TextureFormat.RGBA32, false);
+        webcamMat = new Mat(webcamTexture.height, webcamTexture.width, CvType.CV_8UC4);
+
+        if (displayImage != null)
+            displayImage.texture = outputTexture;
+
+        if (webcamCube != null)
+            webcamCube.GetComponent<Renderer>().material.mainTexture = outputTexture;
+
+        AdjustCamera();
+    }
+
+    void AdjustCamera()
+    {
+        if (mainCamera != null)
+        {
+            mainCamera.fieldOfView = 90;
+            mainCamera.nearClipPlane = 0.1f;
+            mainCamera.farClipPlane = 1000f;
+        }
+    }
+
+    void Update()
+    {
+        if (intensitySlider != null && intensitySlider.gameObject.activeInHierarchy)
+        {
+            float step = 0.01f;
+            if (Input.GetKey(KeyCode.LeftArrow))
+                intensitySlider.value = Mathf.Clamp01(intensitySlider.value - step);
+            else if (Input.GetKey(KeyCode.RightArrow))
+                intensitySlider.value = Mathf.Clamp01(intensitySlider.value + step);
+
+            if (valueLabel != null)
+                valueLabel.text = $"Intensity: {intensitySlider.value:0.00}";
+        }
+    }
+
+    void OnDestroy()
+    {
+        if (webcamTexture != null) webcamTexture.Stop();
+        if (webcamMat != null) webcamMat.Dispose();
+    }
+}
