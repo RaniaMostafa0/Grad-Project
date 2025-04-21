@@ -1,0 +1,54 @@
+using UnityEngine;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+
+public class CorticalCataract : MonoBehaviour
+{
+    private UIManager ui;
+    private Mat processedMat;
+    private float updateInterval = 1f / 30f;
+    private float lastUpdateTime = 0f;
+
+    void Start()
+    {
+        ui = GetComponent<UIManager>();
+        processedMat = new Mat(ui.webcamMat.rows(), ui.webcamMat.cols(), CvType.CV_8UC4);
+    }
+
+    void Update()
+    {
+        if (ui.webcamTexture == null || !ui.webcamTexture.didUpdateThisFrame) return;
+
+        if (Time.time - lastUpdateTime >= updateInterval)
+        {
+            Utils.webCamTextureToMat(ui.webcamTexture, ui.webcamMat);
+            float intensity = ui.intensitySlider != null ? ui.intensitySlider.value : 0.5f;
+            ApplyBlurAndHaze(ui.webcamMat, processedMat, intensity);
+            Utils.matToTexture2D(processedMat, ui.outputTexture);
+
+            lastUpdateTime = Time.time;
+        }
+    }
+
+    void ApplyBlurAndHaze(Mat inputMat, Mat outputMat, float intensity)
+    {
+        int maxBlur = 25;
+        int blurAmount = Mathf.Clamp((int)(1 + intensity * maxBlur), 1, maxBlur);
+        if (blurAmount % 2 == 0) blurAmount += 1;
+
+        Mat blurred = new Mat();
+        Imgproc.GaussianBlur(inputMat, blurred, new Size(blurAmount, blurAmount), 0);
+
+        Mat hazeOverlay = new Mat(inputMat.rows(), inputMat.cols(), inputMat.type(), new Scalar(200, 200, 200, 255));
+        Core.addWeighted(blurred, 1 - intensity * 0.7f, hazeOverlay, intensity * 0.7f, 0, outputMat);
+
+        blurred.Dispose();
+        hazeOverlay.Dispose();
+    }
+
+    void OnDestroy()
+    {
+        if (processedMat != null) processedMat.Dispose();
+    }
+}
