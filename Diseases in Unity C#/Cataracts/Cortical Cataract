@@ -1,0 +1,87 @@
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+
+[RequireComponent(typeof(RawImage))]
+public class CorticalCataractEffect : MonoBehaviour
+{
+    [Header("Tweakable Severity")]
+    [SerializeField] private int maxKernel = 25;
+    [SerializeField] private float hazeFactor = 0.7f;
+
+    // --- Runtime state ---
+    private RawImage display;
+    private Slider slider;
+    private WebCamTexture cam;
+    private Texture2D tex;
+
+    // Mats
+    private Mat matIn;
+    private Mat matBlur;
+    private Mat matHazy;
+    private Mat matOverlay;
+
+    /// <summary>
+    /// Initializes the effect with the UI target, slider, and shared camera.
+    /// </summary>
+    public void Initialize(RawImage target, Slider control, WebCamTexture sharedCam)
+    {
+        display = target;
+        slider = control;
+        cam = sharedCam;
+        if (!cam.isPlaying) cam.Play();
+
+        int width  = cam.width  > 16 ? cam.width  : 1280;
+        int height = cam.height > 16 ? cam.height : 720;
+
+        tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        display.texture = tex;
+
+        matIn      = new Mat(height, width, CvType.CV_8UC4);
+        matBlur    = new Mat(height, width, CvType.CV_8UC4);
+        matHazy    = new Mat(height, width, CvType.CV_8UC4);
+        matOverlay = new Mat(height, width, CvType.CV_8UC4, new Scalar(200, 200, 200, 255));
+    }
+
+    void Update()
+    {
+        if (cam == null || !cam.didUpdateThisFrame)
+            return;
+
+        // 1) Camera to mat
+        Utils.webCamTextureToMat(cam, matIn);
+
+        // 2) Compute intensity (0 = clear, 1 = full haze)
+        double t = (slider != null ? slider.value : 0.0);
+
+        // 3) Apply Gaussian blur
+        int k = Mathf.Max(1, 1 + (int)(t * maxKernel));
+        if (k % 2 == 0) k++;
+        Imgproc.GaussianBlur(matIn, matBlur, new Size(k, k), 5);
+
+        // 4) Blend with haze overlay
+        double alpha = 1.0 - t * hazeFactor;
+        double beta  = t * hazeFactor;
+        Core.addWeighted(matBlur, alpha, matOverlay, beta, 0, matHazy);
+
+        // 5) Output to texture
+        Utils.fastMatToTexture2D(matHazy, tex);
+    }
+
+    void OnDisable()
+    {
+        if (cam != null)
+            cam.Stop();
+    }
+
+    void OnDestroy()
+    {
+        cam?.Stop();
+        matIn?.Dispose();
+        matBlur?.Dispose();
+        matHazy?.Dispose();
+        matOverlay?.Dispose();
+    }
+}
