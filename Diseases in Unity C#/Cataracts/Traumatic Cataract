@@ -1,0 +1,74 @@
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+
+[RequireComponent(typeof(RawImage))]
+public class TraumaticCataractEffect : MonoBehaviour
+{
+    [Header("Traumatic Cataract Settings")]
+    [SerializeField] private int maxKernelSize = 49; // maximum kernel size
+    [SerializeField] private float blurExponent = 2f; // non-linear scale
+
+    private RawImage display;
+    private Slider intensitySlider;
+    private WebCamTexture cam;
+    private Texture2D tex;
+
+    // OpenCV Mats
+    private Mat matInput;
+    private Mat matBlurred;
+
+    public void Initialize(RawImage target, Slider slider, WebCamTexture sharedCam)
+    {
+        display = target;
+        intensitySlider = slider;
+        cam = sharedCam;
+
+        if (!cam.isPlaying) cam.Play();
+
+        int width = cam.width > 16 ? cam.width : 1280;
+        int height = cam.height > 16 ? cam.height : 720;
+
+        tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        display.texture = tex;
+
+        matInput = new Mat(height, width, CvType.CV_8UC4);
+        matBlurred = new Mat(height, width, CvType.CV_8UC4);
+    }
+
+    void Update()
+    {
+        if (cam == null || !cam.didUpdateThisFrame)
+            return;
+
+        // 1) Copy webcam texture to mat
+        Utils.webCamTextureToMat(cam, matInput);
+
+        // 2) Compute blur intensity
+        float t = intensitySlider != null ? intensitySlider.value : 0f;
+        float scaled = Mathf.Pow(t, blurExponent);
+        int kernelSize = Mathf.Clamp((int)(scaled * maxKernelSize), 1, maxKernelSize);
+        if (kernelSize % 2 == 0) kernelSize++; // Must be odd
+
+        // 3) Apply Gaussian blur (Traumatic Cataract effect)
+        Imgproc.GaussianBlur(matInput, matBlurred, new Size(kernelSize, kernelSize), 0);
+
+        // 4) Convert to texture
+        Utils.fastMatToTexture2D(matBlurred, tex);
+    }
+
+    void OnDisable()
+    {
+        if (cam != null)
+            cam.Stop();
+    }
+
+    void OnDestroy()
+    {
+        cam?.Stop();
+        matInput?.Dispose();
+        matBlurred?.Dispose();
+    }
+}
