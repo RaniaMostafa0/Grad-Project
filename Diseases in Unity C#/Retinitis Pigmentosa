@@ -1,0 +1,161 @@
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+using System.Collections;
+
+[RequireComponent(typeof(RawImage))]
+public class RetinitisPigmentosaEffect : MonoBehaviour
+{
+    [Header("Tunnel Vision Settings")]
+    [SerializeField] private int blurSize = 51;
+    [SerializeField] private float tunnelStrength = 1.0f;
+
+    private RawImage display;
+    private Slider intensitySlider;
+    private WebCamTexture cam;
+    private Texture2D tex;
+
+    private Mat matInput;
+    private Mat matProcessed;
+    private Mat tunnelMask;
+    private Mat noiseMap;
+
+    private bool initialized = false;
+
+    public void Initialize(RawImage target, Slider slider, WebCamTexture sharedCam)
+    {
+        display = target;
+        intensitySlider = slider;
+        cam = sharedCam;
+
+        if (!cam.isPlaying) cam.Play();
+        StartCoroutine(WaitForWebCamInit());
+    }
+
+    IEnumerator WaitForWebCamInit()
+    {
+        while (cam.width <= 16)
+            yield return null;
+
+        int width = cam.width;
+        int height = cam.height;
+
+        tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        display.texture = tex;
+
+        matInput = new Mat(height, width, CvType.CV_8UC4);
+        matProcessed = new Mat(height, width, CvType.CV_8UC4);
+        tunnelMask = new Mat(height, width, CvType.CV_32F);
+        noiseMap = GenerateNoiseMap(height, width);
+
+        initialized = true;
+    }
+
+    void Update()
+    {
+        if (!initialized || cam == null || !cam.didUpdateThisFrame)
+            return;
+
+        Utils.webCamTextureToMat(cam, matInput);
+
+        float t = intensitySlider != null ? intensitySlider.value : 0f;
+        float progression = Mathf.Clamp01(Mathf.Pow(t, 2f)); // nonlinear progression
+
+        GenerateIrregularTunnelMask(progression);
+        ApplyTunnelEffect();
+
+        Utils.fastMatToTexture2D(matProcessed, tex);
+    }
+
+    private void GenerateIrregularTunnelMask(float progression)
+    {
+        if (progression <= 0)
+        {
+            tunnelMask.setTo(new Scalar(1));
+            return;
+        }
+
+        int width = matInput.cols();
+        int height = matInput.rows();
+        float cx = width / 2f;
+        float cy = height / 2f;
+        float radius = Mathf.Lerp(Mathf.Min(width, height) / 2f, 0f, progression);
+
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                float dx = x - cx;
+                float dy = y - cy;
+                float dist = Mathf.Sqrt(dx * dx + dy * dy);
+                float noiseFactor = (float)noiseMap.get(y, x)[0]; // range: [-1, 1]
+
+                float irregularRadius = radius * (1f + 0.4f * noiseFactor);
+                float fadeWidth = 80f;
+
+                float value = 0f;
+                if (dist < irregularRadius - fadeWidth / 2f)
+                    value = 1f;
+                else if (dist < irregularRadius + fadeWidth / 2f)
+                    value = 1f - ((dist - (irregularRadius - fadeWidth / 2f)) / fadeWidth);
+
+                tunnelMask.put(y, x, Mathf.Clamp01(value));
+            }
+        }
+
+        Imgproc.GaussianBlur(tunnelMask, tunnelMask, new Size(blurSize, blurSize), 0);
+    }
+
+    private void ApplyTunnelEffect()
+    {
+        int rows = matInput.rows();
+        int cols = matInput.cols();
+        matInput.copyTo(matProcessed);
+
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < cols; x++)
+            {
+                double[] pixel = matInput.get(y, x);
+                float mask = (float)tunnelMask.get(y, x)[0];
+
+                pixel[0] *= mask;
+                pixel[1] *= mask;
+                pixel[2] *= mask;
+
+                matProcessed.put(y, x, pixel);
+            }
+        }
+    }
+
+    private Mat GenerateNoiseMap(int height, int width)
+    {
+        Mat noise = new Mat(height, width, CvType.CV_32F);
+        Core.randn(noise, 0.0, 1.0);
+        Imgproc.GaussianBlur(noise, noise, new Size(blurSize, blurSize), 0);
+
+        Core.MinMaxLocResult mm = Core.minMaxLoc(noise);
+        Core.subtract(noise, new Scalar(mm.minVal), noise);
+        Core.divide(noise, new Scalar(mm.maxVal - mm.minVal), noise);
+        Core.multiply(noise, new Scalar(2.0), noise);
+        Core.subtract(noise, new Scalar(1.0), noise);
+
+        return noise;
+    }
+
+    void OnDisable()
+    {
+        //cam?.Stop();
+    }
+
+    void OnDestroy()
+    {
+        cam?.Stop();
+        matInput?.Dispose();
+        matProcessed?.Dispose();
+        tunnelMask?.Dispose();
+        noiseMap?.Dispose();
+    }
+}
