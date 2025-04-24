@@ -1,0 +1,105 @@
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+
+/// <summary>
+/// Real-time Nuclear Cataract simulation.
+/// • Slider value 0 → normal vision.
+/// • Slider value 1 → maximum blur, yellow tint, and contrast loss.
+/// </summary>
+[RequireComponent(typeof(RawImage))]
+public class NuclearCataractEffect : MonoBehaviour
+{
+    [Header("Effect Parameters")]
+    [SerializeField] private int baseKernel = 15;   // blur kernel at t = 1
+    [SerializeField] private double alphaMin = 1.0;  // contrast α at t = 0
+    [SerializeField] private double alphaMax = 0.65; // contrast α at t = 1
+    [SerializeField] private double betaMin = 0.0;  // contrast β at t = 0
+    [SerializeField] private double betaMax = 30.0; // contrast β at t = 1
+
+    // ----- runtime refs -----
+    private RawImage display;
+    private Slider slider;
+    private WebCamTexture cam;
+    private Texture2D outputTex;
+
+    // ----- OpenCV mats -----
+    private Mat matIn, matBlurH, matBlurHV, matYellow, matMix, matRGBA;
+    private readonly Scalar yellowTint = new Scalar(0.5, 1.0, 1.0); // BGR tint factors
+
+    /// <summary>Called by MenuManager when this mode is selected.</summary>
+    public void Initialize(RawImage target, Slider control, WebCamTexture sharedCam)
+    {
+        display = target;
+        slider = control;
+        cam = sharedCam;
+        if (!cam.isPlaying) cam.Play();
+
+        int w = cam.width > 16 ? cam.width : 1280;
+        int h = cam.height > 16 ? cam.height : 720;
+
+        outputTex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+        display.texture = outputTex;
+        display.color = Color.white;   // be sure RawImage is opaque
+
+        matIn = new Mat(h, w, CvType.CV_8UC4);
+        matBlurH = new Mat(h, w, CvType.CV_8UC4);
+        matBlurHV = new Mat(h, w, CvType.CV_8UC4);
+        matYellow = new Mat(h, w, CvType.CV_8UC4);
+        matMix = new Mat(h, w, CvType.CV_8UC4);
+        matRGBA = new Mat(h, w, CvType.CV_8UC4);
+    }
+
+    void Update()
+    {
+        if (cam == null || !cam.didUpdateThisFrame) return;
+
+        Utils.webCamTextureToMat(cam, matIn);
+        double t = slider != null ? slider.value : 0.0;     // severity 0-1
+
+        /* 1 — Separable Gaussian blur */
+        int k = Mathf.Max(1, 1 + (int)(baseKernel * t));
+        if ((k & 1) == 0) k++;                              // make odd
+        Imgproc.GaussianBlur(matIn, matBlurH, new Size(k, 1), 5);
+        Imgproc.GaussianBlur(matBlurH, matBlurHV, new Size(1, k), 5);
+
+        /* 2 — Yellow-tinted version */
+        Imgproc.cvtColor(matBlurHV, matYellow, Imgproc.COLOR_RGBA2RGB);
+        matYellow.convertTo(matYellow, CvType.CV_32FC3);
+        Core.multiply(matYellow, yellowTint, matYellow);
+        matYellow.convertTo(matYellow, CvType.CV_8UC3);
+        Imgproc.cvtColor(matYellow, matYellow, Imgproc.COLOR_BGR2RGBA);
+
+        /* 3 — Blend original-blurred RGB(A) with yellow version by t */
+        matBlurHV.copyTo(matMix);
+        Core.addWeighted(matMix, 1.0 - t, matYellow, t, 0, matMix);
+
+        /* 4 — Contrast change  dst = α·src + β */
+        double a = Mathf.Lerp((float)alphaMin, (float)alphaMax, (float)t);
+        double b = Mathf.Lerp((float)betaMin, (float)betaMax, (float)t);
+        Core.convertScaleAbs(matMix, matRGBA, a, b);
+
+        /* 5 — Force alpha fully opaque so background never shows */
+        List<Mat> ch = new List<Mat>();
+        Core.split(matRGBA, ch);            // 0,1,2,3
+        ch[3].setTo(new Scalar(255));
+        Core.merge(ch, matRGBA);
+
+        /* 6 — Upload to texture */
+        Utils.fastMatToTexture2D(matRGBA, outputTex);
+    }
+
+    void OnDisable()
+    {
+        matIn?.Dispose(); matBlurH?.Dispose(); matBlurHV?.Dispose();
+        matYellow?.Dispose(); matMix?.Dispose(); matRGBA?.Dispose();
+    }
+
+    void OnDestroy()
+    {
+        if (cam != null && cam.isPlaying) cam.Stop();
+    }
+}
