@@ -1,0 +1,136 @@
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+
+[RequireComponent(typeof(RawImage))]
+public class MacularPuckerEffect : MonoBehaviour
+{
+    /* ---------- tunables ---------- */
+    [Header("Zone & Wave")]
+    [SerializeField, Range(0.1f, 0.8f)] private float radiusFrac = 0.35f;
+    [SerializeField] private int waveFreq = 5;
+    [SerializeField] private float maxShiftPx = 10f;
+
+    [Header("Blur")]
+    [SerializeField] private int maxBlurKernel = 31;   // odd
+
+    /* ---------- refs ---------- */
+    RawImage display; Slider slider; WebCamTexture cam; Texture2D tex;
+
+    /* ---------- mats (persistent) ---------- */
+    Mat baseX, baseY, dirX, dirY, mapX, mapY;
+    Mat mask1;                    // single-channel smooth mask
+    Mat mask4, inv4;              // 4-channel masks
+    Mat matIn, matWarp, matBlur, matOut;
+
+    /* ---------- Init ---------- */
+    public void Initialize(RawImage tgt, Slider ctrl, WebCamTexture sharedCam)
+    {
+        display = tgt; slider = ctrl; cam = sharedCam;
+        if (!cam.isPlaying) cam.Play();
+
+        int w = cam.width > 16 ? cam.width : 1280;
+        int h = cam.height > 16 ? cam.height : 720;
+
+        tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+        display.texture = tex; display.color = Color.white;
+
+        matIn = new Mat(h, w, CvType.CV_8UC4);
+        matWarp = new Mat(h, w, CvType.CV_8UC4);
+        matBlur = new Mat(h, w, CvType.CV_8UC4);
+        matOut = new Mat(h, w, CvType.CV_8UC4);
+
+        baseX = new Mat(h, w, CvType.CV_32FC1);
+        baseY = new Mat(h, w, CvType.CV_32FC1);
+        dirX = new Mat(h, w, CvType.CV_32FC1);
+        dirY = new Mat(h, w, CvType.CV_32FC1);
+        mapX = new Mat(h, w, CvType.CV_32FC1);
+        mapY = new Mat(h, w, CvType.CV_32FC1);
+        mask1 = new Mat(h, w, CvType.CV_32FC1);
+
+        BuildDirectionAndMask(w, h);
+        Build4ChannelMasks();              // once, not every frame
+    }
+
+    /* ---------- Pre-compute dir + single-channel mask ---------- */
+    void BuildDirectionAndMask(int w, int h)
+    {
+        int cx = w / 2, cy = h / 2;
+        float R = Mathf.Min(cx, cy) * radiusFrac;
+
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                baseX.put(y, x, (float)x);
+                baseY.put(y, x, (float)y);
+
+                float dx = x - cx, dy = y - cy, r = Mathf.Sqrt(dx * dx + dy * dy);
+                if (r > R) { dirX.put(y, x, 0); dirY.put(y, x, 0); mask1.put(y, x, 0); continue; }
+
+                float u = r / R, smooth = Mathf.Pow(1f - u * u, 2);
+                float wave = Mathf.Sin(u * waveFreq * Mathf.PI) * smooth;
+
+                dirX.put(y, x, r == 0 ? 0 : wave * dx / r);
+                dirY.put(y, x, r == 0 ? 0 : wave * dy / r);
+                mask1.put(y, x, smooth);
+            }
+    }
+
+    /* ---------- Expand mask to 4-channel once ---------- */
+    void Build4ChannelMasks()
+    {
+        List<Mat> ch = new() { mask1, mask1.clone(), mask1.clone(), mask1.clone() };
+        mask4 = new Mat(); Core.merge(ch, mask4);
+
+        Mat inv1 = Mat.ones(mask1.size(), mask1.type());
+        Core.subtract(inv1, mask1, inv1);
+        ch = new() { inv1, inv1.clone(), inv1.clone(), inv1.clone() };
+        inv4 = new Mat(); Core.merge(ch, inv4);
+        inv1.Dispose();
+    }
+
+    /* ---------- per-frame ---------- */
+    void Update()
+    {
+        if (cam == null || !cam.didUpdateThisFrame) return;
+        Utils.webCamTextureToMat(cam, matIn);
+
+        float t = slider ? slider.value : 0f;
+        if (t < 0.001f) { Utils.fastMatToTexture2D(matIn, tex); return; }
+
+        Core.multiply(dirX, new Scalar(t * maxShiftPx), mapX);
+        Core.multiply(dirY, new Scalar(t * maxShiftPx), mapY);
+        Core.add(mapX, baseX, mapX); Core.add(mapY, baseY, mapY);
+
+        Imgproc.remap(matIn, matWarp, mapX, mapY,
+                      Imgproc.INTER_LINEAR, Core.BORDER_REFLECT101);
+
+        int k = 1 + (int)(t * maxBlurKernel); if ((k & 1) == 0) k++;
+        Imgproc.GaussianBlur(matWarp, matBlur, new Size(k, k), 0);
+
+        // blend in 32F
+        Mat wF = new Mat(); matWarp.convertTo(wF, CvType.CV_32FC4);
+        Mat bF = new Mat(); matBlur.convertTo(bF, CvType.CV_32FC4);
+        Mat a = new Mat(), b = new Mat();
+        Core.multiply(wF, inv4, a);
+        Core.multiply(bF, mask4, b);
+        Core.add(a, b, wF);
+        wF.convertTo(matOut, CvType.CV_8UC4);
+
+        Utils.fastMatToTexture2D(matOut, tex);
+
+        wF.Dispose(); bF.Dispose(); a.Dispose(); b.Dispose();
+    }
+
+    /* ---------- cleanup ---------- */
+    void OnDisable()
+    {
+        matIn?.Dispose(); matWarp?.Dispose(); matBlur?.Dispose(); matOut?.Dispose();
+        baseX?.Dispose(); baseY?.Dispose(); dirX?.Dispose(); dirY?.Dispose();
+        mapX?.Dispose(); mapY?.Dispose(); mask1?.Dispose(); mask4?.Dispose(); inv4?.Dispose();
+    }
+    void OnDestroy() { if (cam && cam.isPlaying) cam.Stop(); }
+}
