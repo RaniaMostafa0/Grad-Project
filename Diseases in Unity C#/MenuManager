@@ -2,13 +2,13 @@ using UnityEngine;
 using UnityEngine.UI;
 
 /// <summary>
-/// Central UI controller – handles panel visibility, webcam management, and toggles real‑time cataract effects.
-/// Regular vision and four diseases are supported:
-/// • Cortical   • Nuclear   • Traumatic   • Posterior (glare/halo)
+/// Central UI controller – handles panel visibility, webcam management, and
+/// toggles real-time retinal-disease effects.  Includes a Back button to
+/// return to the disease-selection menu.
 /// </summary>
 public class MenuManager : MonoBehaviour
 {
-    /* ----------------------- Inspector hooks ----------------------- */
+    /* ---------------- Inspector hooks ---------------- */
     [Header("Panels")]
     [SerializeField] private GameObject startPanel;
     [SerializeField] private GameObject diseasesPanel;
@@ -19,182 +19,185 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private Button corticalButton;
     [SerializeField] private Button nuclearButton;
     [SerializeField] private Button traumaticButton;
-    //[SerializeField] private Button posteriorButton;
+    [SerializeField] private Button posteriorButton;
     [SerializeField] private Button stargardtButton;
     [SerializeField] private Button macularButton;
-
+    [SerializeField] private Button rpButton;
+    [Space]
+    [SerializeField] private Button backButton;          // NEW
 
     [Header("Slider")]
-    [SerializeField] private Slider severitySlider;       // shared by all diseases
+    [SerializeField] private Slider severitySlider;
 
     [Header("Display")]
     [SerializeField] private RawImage webcamDisplay;
 
     [Header("Effects")]
-    [SerializeField] private CorticalCataractEffect corticalEffect;
-    [SerializeField] private NuclearCataractEffect nuclearEffect;
-    [SerializeField] private TraumaticCataractEffect traumaticEffect;
-    [SerializeField] private PosteriorCataractEffect posteriorEffect;
-    [SerializeField] private StargardtEffect stargardtEffect;
+    [SerializeField] private CorticalCataractEffect    corticalEffect;
+    [SerializeField] private NuclearCataractEffect     nuclearEffect;
+    [SerializeField] private TraumaticCataractEffect   traumaticEffect;
+    [SerializeField] private PosteriorCataractEffect   posteriorEffect;
+    [SerializeField] private StargardtEffect           stargardtEffect;
+    [SerializeField] private MacularPuckerEffect       macularEffect;
     [SerializeField] private RetinitisPigmentosaEffect rpEffect;
-    [SerializeField] private MacularPuckerEffect macularEffect;
 
-
-    /* ----------------------- private state ------------------------ */
-    private WebCamTexture cam;   // one camera reused across modes
+    /* ---------------- internal state ---------------- */
+    private WebCamTexture cam;
 
     #region Unity lifecycle
     private void Awake()
     {
-        // Button → handler wiring
-        startButton.onClick.AddListener(ShowDiseases);
+        /* ---- wire buttons ---- */
+        startButton      .onClick.AddListener(ShowDiseases);
         regularVisionButton.onClick.AddListener(StartRegularVision);
-        corticalButton.onClick.AddListener(StartCorticalCataract);
-        nuclearButton.onClick.AddListener(StartNuclearCataract);
-        traumaticButton.onClick.AddListener(StartTraumaticCataract);
-        //posteriorButton.onClick.AddListener(StartPosteriorCataract);
-        stargardtButton.onClick.AddListener(StartStargardt);
-        macularButton.onClick.AddListener(StartMacularPucker);
+        corticalButton   .onClick.AddListener(StartCorticalCataract);
+        nuclearButton    .onClick.AddListener(StartNuclearCataract);
+        traumaticButton  .onClick.AddListener(StartTraumaticCataract);
+        posteriorButton  .onClick.AddListener(StartPosteriorCataract);
+        stargardtButton  .onClick.AddListener(StartStargardt);
+        macularButton    .onClick.AddListener(StartMacularPucker);
+        rpButton         .onClick.AddListener(StartRP);
+        backButton       .onClick.AddListener(BackToMenu);           // NEW
 
-        // Initial UI state
+        /* ---- initial UI ---- */
         diseasesPanel.SetActive(false);
         severitySlider.gameObject.SetActive(false);
         webcamDisplay.gameObject.SetActive(false);
+        backButton.gameObject.SetActive(false);
 
         DisableAllEffects();
     }
     #endregion
 
-    /* ----------------------- Menu navigation ---------------------- */
+    /* ---------------- navigation helpers ---------------- */
     public void ShowDiseases()
     {
         startPanel.SetActive(false);
         diseasesPanel.SetActive(true);
+        backButton.gameObject.SetActive(false);
     }
 
-    /* ----------------------- Helpers ------------------------------ */
+    private void BackToMenu()
+    {
+        // Stop camera preview for performance (optional)
+        if (cam != null && cam.isPlaying) cam.Pause();
+
+        webcamDisplay.gameObject.SetActive(false);
+        severitySlider.gameObject.SetActive(false);
+        DisableAllEffects();
+
+        diseasesPanel.SetActive(true);
+        backButton.gameObject.SetActive(false);
+    }
+
     private void EnsureCameraRunning()
     {
         if (cam == null)
-        {
             cam = new WebCamTexture(1280, 720);
-            cam.Play();
-        }
-        else if (!cam.isPlaying)
-        {
-            cam.Play();
-        }
+
+        if (!cam.isPlaying) cam.Play();
         webcamDisplay.texture = cam;
         webcamDisplay.gameObject.SetActive(true);
     }
 
-    private void HidePanels()
+    private void HidePanelsForSimulation()
     {
         startPanel.SetActive(false);
         diseasesPanel.SetActive(false);
+        backButton.gameObject.SetActive(true);
     }
 
     private void DisableAllEffects()
     {
-        corticalEffect.enabled = false;
-        nuclearEffect.enabled = false;
+        corticalEffect.enabled  = false;
+        nuclearEffect.enabled   = false;
         traumaticEffect.enabled = false;
         posteriorEffect.enabled = false;
+        stargardtEffect.enabled = false;
+        macularEffect.enabled   = false;
+        rpEffect.enabled        = false;
     }
 
-    /* ----------------------- Modes ------------------------------- */
+    /* ---------------- mode wrappers ---------------- */
     public void StartRegularVision()
     {
-        HidePanels();
+        HidePanelsForSimulation();
         DisableAllEffects();
         severitySlider.gameObject.SetActive(false);
-        EnsureCameraRunning();           // raw webcam feed
+        EnsureCameraRunning();
     }
 
     public void StartCorticalCataract()
     {
-        HidePanels();
+        HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
 
-        severitySlider.value = 0f;
-        severitySlider.gameObject.SetActive(true);
-
-        corticalEffect.Initialize(webcamDisplay, severitySlider, cam);
-        corticalEffect.enabled = true;
+        ShowSliderAndInitEffect(corticalEffect.Initialize, corticalEffect);
     }
 
     public void StartNuclearCataract()
     {
-        HidePanels();
+        HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
 
-        severitySlider.value = 0f;
-        severitySlider.gameObject.SetActive(true);
-
-        nuclearEffect.Initialize(webcamDisplay, severitySlider, cam);
-        nuclearEffect.enabled = true;
+        ShowSliderAndInitEffect(nuclearEffect.Initialize, nuclearEffect);
     }
 
     public void StartTraumaticCataract()
     {
-        HidePanels();
+        HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
 
-        severitySlider.value = 0f;
-        severitySlider.gameObject.SetActive(true);
-
-        traumaticEffect.Initialize(webcamDisplay, severitySlider, cam);
-        traumaticEffect.enabled = true;
+        ShowSliderAndInitEffect(traumaticEffect.Initialize, traumaticEffect);
     }
 
-    public void StartPosteriorCataract()            
+    public void StartPosteriorCataract()
     {
-        HidePanels();
+        HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
 
-        severitySlider.value = 0f;
-        severitySlider.gameObject.SetActive(true);
-
-        posteriorEffect.Initialize(webcamDisplay, severitySlider, cam);
-        posteriorEffect.enabled = true;
+        ShowSliderAndInitEffect(posteriorEffect.Initialize, posteriorEffect);
     }
 
     public void StartStargardt()
     {
-        HidePanels();
+        HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
 
-        severitySlider.value = 0f;
-        severitySlider.gameObject.SetActive(true);
+        ShowSliderAndInitEffect(stargardtEffect.Initialize, stargardtEffect);
+    }
 
-        stargardtEffect.Initialize(webcamDisplay, severitySlider, cam);
-        stargardtEffect.enabled = true;
+    public void StartMacularPucker()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+
+        ShowSliderAndInitEffect(macularEffect.Initialize, macularEffect);
     }
 
     public void StartRP()
     {
-        HidePanels();
+        HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
 
+        ShowSliderAndInitEffect(rpEffect.Initialize, rpEffect);
+    }
+
+    /* ------------ helper to show slider & enable effect ------------ */
+    private void ShowSliderAndInitEffect(System.Action<RawImage, Slider, WebCamTexture> init,
+                                         Behaviour effectComponent)
+    {
         severitySlider.value = 0f;
         severitySlider.gameObject.SetActive(true);
 
-        rpEffect.Initialize(webcamDisplay, severitySlider, cam);
-        rpEffect.enabled = true;
+        init.Invoke(webcamDisplay, severitySlider, cam);
+        effectComponent.enabled = true;
     }
-
-    public void StartMacularPucker()                // NEW
-    {
-        HidePanels(); DisableAllEffects(); EnsureCameraRunning();
-        severitySlider.value = 0f; severitySlider.gameObject.SetActive(true);
-        macularEffect.Initialize(webcamDisplay, severitySlider, cam);
-        macularEffect.enabled = true;
-    }
-
 }
