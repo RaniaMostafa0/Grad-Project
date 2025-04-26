@@ -21,7 +21,8 @@ public class AMDEffect : MonoBehaviour
     private Mat matProcessed;
     private Mat matBlurred;
     private Mat blurMask;
-    private Mat spotMask;
+    private Mat spotCoreMask;
+    private Mat spotOuterMask;
     private Mat noiseMap;
 
     private bool initialized = false;
@@ -51,7 +52,8 @@ public class AMDEffect : MonoBehaviour
         matProcessed = new Mat(height, width, CvType.CV_8UC4);
         matBlurred = new Mat(height, width, CvType.CV_8UC4);
         blurMask = new Mat(height, width, CvType.CV_32F);
-        spotMask = new Mat(height, width, CvType.CV_32F);
+        spotCoreMask = new Mat(height, width, CvType.CV_32F);
+        spotOuterMask = new Mat(height, width, CvType.CV_32F);
         noiseMap = generateStaticNoiseMap(height, width);
 
         initialized = true;
@@ -81,8 +83,11 @@ public class AMDEffect : MonoBehaviour
         float cx = width / 2f;
         float cy = height / 2f;
 
-        float maxRadius = Mathf.Min(width, height) * 0.4f * progression;
+        blurMask.setTo(new Scalar(1f));
+
+        float maxRadius = Mathf.Lerp(50f, 200f, progression); // Starts small, grows with progression
         float fadeWidth = 50f;
+        float noiseScale = 0.05f;
 
         for (int y = 0; y < height; y++)
         {
@@ -92,42 +97,58 @@ public class AMDEffect : MonoBehaviour
                 float dy = y - cy;
                 float dist = Mathf.Sqrt(dx * dx + dy * dy);
 
+                float perlin = Mathf.PerlinNoise(x * noiseScale, y * noiseScale) * 10f;
+                float rBlur = maxRadius + perlin;
+
                 float maskVal = 1f;
-                if (dist < maxRadius - fadeWidth / 2f)
+                if (dist < rBlur - fadeWidth / 2f)
                     maskVal = 0f;
-                else if (dist < maxRadius + fadeWidth / 2f)
-                    maskVal = (dist - (maxRadius - fadeWidth / 2f)) / fadeWidth;
+                else if (dist < rBlur + fadeWidth / 2f)
+                    maskVal = (dist - (rBlur - fadeWidth / 2f)) / fadeWidth;
 
                 blurMask.put(y, x, Mathf.Clamp01(maskVal));
             }
         }
 
-        Imgproc.GaussianBlur(blurMask, blurMask, new Size(maxKernelSize, maxKernelSize), 0);
+        int dynamicKernelSize = Mathf.Max(3, (int)(progression * maxKernelSize)); // Dynamic blur strength
+        if (dynamicKernelSize % 2 == 0) dynamicKernelSize++; // Make sure it's odd
+        Imgproc.GaussianBlur(blurMask, blurMask, new Size(dynamicKernelSize, dynamicKernelSize), 0);
     }
+
 
     private void GenerateSpotMask(float progression)
     {
-        if (progression < spotStartThreshold)
-        {
-            spotMask.setTo(new Scalar(1)); // no black spot yet
-            return;
-        }
-
-        float normalizedProgress = (progression - spotStartThreshold) / (1f - spotStartThreshold);
-
         int width = matInput.cols();
         int height = matInput.rows();
         float cx = width / 2f;
         float cy = height / 2f;
 
-        // Calculate a circular radius for the black spot, but add more irregularity
-        float radius = 200 * normalizedProgress; // The spot's radius will grow as progression increases
-        float fadeWidth = 50f; // Smooth transition between the blurred area and the black spot
+        spotCoreMask.setTo(new Scalar(1f));
+        spotOuterMask.setTo(new Scalar(1f));
 
-        // Add noise to make the spot more irregular
-        float noiseScale = 0.05f; // Controls the amount of irregularity in the shape
+        if (progression < spotStartThreshold)
+            return;
 
-        // Generate the circular mask with noise for more irregularity
+        float normalizedProgress = (progression - spotStartThreshold) / (1f - spotStartThreshold);
+
+        float minRadius = 10f;
+        float maxOuterRadius = 150f;
+        float maxCoreRadius = 140f; // A little smaller so it "catches" the outer at the end
+
+        // Ease-out for smoother progression
+        float easedProgress = Mathf.Sqrt(normalizedProgress);
+
+        // Faded outer circle grows immediately
+        float outerRadius = Mathf.Lerp(minRadius, maxOuterRadius, easedProgress);
+
+        // Core black spot grows later
+        float coreStartDelay = 0.4f; // Start growing after 40% progression
+        float coreProgress = Mathf.Clamp01((easedProgress - coreStartDelay) / (1f - coreStartDelay));
+        float coreRadius = Mathf.Lerp(minRadius * 0.5f, maxCoreRadius, coreProgress);
+
+        float fadeWidth = 50f;
+        float noiseScale = 0.05f;
+
         for (int y = 0; y < height; y++)
         {
             for (int x = 0; x < width; x++)
@@ -136,21 +157,33 @@ public class AMDEffect : MonoBehaviour
                 float dy = y - cy;
                 float dist = Mathf.Sqrt(dx * dx + dy * dy);
 
-                // Use Perlin noise to create smoother irregularity in the spot's boundary
-                float perlinNoise = Mathf.PerlinNoise(x * noiseScale, y * noiseScale) * 10f; // Scale the noise for more irregularity
-                float irregularRadius = radius + perlinNoise; // Add irregular noise to the radius
+                float perlin = Mathf.PerlinNoise(x * noiseScale, y * noiseScale) * 10f;
 
-                float value = 1f; // Default: no effect
-                if (dist < irregularRadius - fadeWidth / 2f)
-                    value = 0f; // Fully blacked out
-                else if (dist < irregularRadius + fadeWidth / 2f)
-                    value = (dist - (irregularRadius - fadeWidth / 2f)) / fadeWidth; // Smooth fade into black
+                float rCore = coreRadius + perlin;
+                float rOuter = outerRadius + perlin;
 
-                spotMask.put(y, x, Mathf.Clamp01(value));
+                // Core black spot
+                float coreValue = 1f;
+                if (dist < rCore - fadeWidth / 2f)
+                    coreValue = 0f;
+                else if (dist < rCore + fadeWidth / 2f)
+                    coreValue = (dist - (rCore - fadeWidth / 2f)) / fadeWidth;
+                spotCoreMask.put(y, x, Mathf.Clamp01(coreValue));
+
+                // Outer faded circle
+                float outerValue = 1f;
+                if (dist < rOuter - fadeWidth / 2f)
+                    outerValue = 0.3f;
+                else if (dist < rOuter + fadeWidth / 2f)
+                    outerValue = Mathf.Lerp(0.3f, 1f, (dist - (rOuter - fadeWidth / 2f)) / fadeWidth);
+                spotOuterMask.put(y, x, Mathf.Clamp01(outerValue));
             }
         }
 
-        Imgproc.GaussianBlur(spotMask, spotMask, new Size(maxKernelSize, maxKernelSize), 0);
+        int dynamicKernelSize = Mathf.Max(3, (int)(easedProgress * maxKernelSize));
+        if (dynamicKernelSize % 2 == 0) dynamicKernelSize++;
+        Imgproc.GaussianBlur(spotCoreMask, spotCoreMask, new Size(dynamicKernelSize, dynamicKernelSize), 0);
+        Imgproc.GaussianBlur(spotOuterMask, spotOuterMask, new Size(dynamicKernelSize, dynamicKernelSize), 0);
     }
 
 
@@ -160,7 +193,9 @@ public class AMDEffect : MonoBehaviour
     {
         matProcessed.setTo(new Scalar(0));
 
-        int blurKernelSize = Mathf.Clamp((int)(progression * maxKernelSize), 1, maxKernelSize);
+        int blurKernelSize = Mathf.Clamp((
+
+int)(progression * maxKernelSize), 1, maxKernelSize);
         if (blurKernelSize % 2 == 0) blurKernelSize++;
         Imgproc.GaussianBlur(matInput, matBlurred, new Size(blurKernelSize, blurKernelSize), 0);
 
@@ -175,11 +210,12 @@ public class AMDEffect : MonoBehaviour
                 double[] blurred = matBlurred.get(y, x);
 
                 float blurWeight = (float)blurMask.get(y, x)[0];
-                float spotWeight = (float)spotMask.get(y, x)[0];
+                float coreWeight = (float)spotCoreMask.get(y, x)[0];
+                float outerWeight = (float)spotOuterMask.get(y, x)[0];
 
-                float r = Mathf.Lerp((float)blurred[0], (float)original[0], blurWeight) * spotWeight;
-                float g = Mathf.Lerp((float)blurred[1], (float)original[1], blurWeight) * spotWeight;
-                float b = Mathf.Lerp((float)blurred[2], (float)original[2], blurWeight) * spotWeight;
+                float r = Mathf.Lerp(0f, Mathf.Lerp((float)blurred[0], (float)original[0], blurWeight), coreWeight * outerWeight);
+                float g = Mathf.Lerp(0f, Mathf.Lerp((float)blurred[1], (float)original[1], blurWeight), coreWeight * outerWeight);
+                float b = Mathf.Lerp(0f, Mathf.Lerp((float)blurred[2], (float)original[2], blurWeight), coreWeight * outerWeight);
 
                 matProcessed.put(y, x, new double[] { r, g, b, original[3] });
             }
@@ -210,7 +246,8 @@ public class AMDEffect : MonoBehaviour
         matProcessed?.Dispose();
         matBlurred?.Dispose();
         blurMask?.Dispose();
-        spotMask?.Dispose();
+        spotCoreMask?.Dispose();
+        spotOuterMask?.Dispose();
         noiseMap?.Dispose();
     }
 }
