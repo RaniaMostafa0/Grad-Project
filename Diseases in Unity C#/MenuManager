@@ -10,7 +10,6 @@ public class MenuManager : MonoBehaviour
 {
     /* ---------------- Inspector hooks ---------------- */
     [Header("Panels")]
-    [SerializeField] private GameObject startPanel;
     [SerializeField] private GameObject diseasesPanel;
 
     [Header("Buttons")]
@@ -23,6 +22,7 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private Button stargardtButton;
     [SerializeField] private Button macularButton;
     [SerializeField] private Button rpButton;
+    [SerializeField] private Button amdButton;
     [Space]
     [SerializeField] private Button backButton;          // NEW
 
@@ -33,13 +33,14 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private RawImage webcamDisplay;
 
     [Header("Effects")]
-    [SerializeField] private CorticalCataractEffect    corticalEffect;
-    [SerializeField] private NuclearCataractEffect     nuclearEffect;
-    [SerializeField] private TraumaticCataractEffect   traumaticEffect;
-    [SerializeField] private PosteriorCataractEffect   posteriorEffect;
-    [SerializeField] private StargardtEffect           stargardtEffect;
-    [SerializeField] private MacularPuckerEffect       macularEffect;
+    [SerializeField] private CorticalCataractEffect corticalEffect;
+    [SerializeField] private NuclearCataractEffect nuclearEffect;
+    [SerializeField] private TraumaticCataractEffect traumaticEffect;
+    [SerializeField] private PosteriorCataractEffect posteriorEffect;
+    [SerializeField] private StargardtEffect stargardtEffect;
+    [SerializeField] private MacularPuckerEffect macularEffect;
     [SerializeField] private RetinitisPigmentosaEffect rpEffect;
+    [SerializeField] private AMDEffect amdEffect;
 
     /* ---------------- internal state ---------------- */
     private WebCamTexture cam;
@@ -48,16 +49,16 @@ public class MenuManager : MonoBehaviour
     private void Awake()
     {
         /* ---- wire buttons ---- */
-        startButton      .onClick.AddListener(ShowDiseases);
+        startButton.onClick.AddListener(ShowDiseases);
         regularVisionButton.onClick.AddListener(StartRegularVision);
-        corticalButton   .onClick.AddListener(StartCorticalCataract);
-        nuclearButton    .onClick.AddListener(StartNuclearCataract);
-        traumaticButton  .onClick.AddListener(StartTraumaticCataract);
-        posteriorButton  .onClick.AddListener(StartPosteriorCataract);
-        stargardtButton  .onClick.AddListener(StartStargardt);
-        macularButton    .onClick.AddListener(StartMacularPucker);
-        rpButton         .onClick.AddListener(StartRP);
-        backButton       .onClick.AddListener(BackToMenu);           // NEW
+        corticalButton.onClick.AddListener(StartCorticalCataract);
+        nuclearButton.onClick.AddListener(StartNuclearCataract);
+        traumaticButton.onClick.AddListener(StartTraumaticCataract);
+        posteriorButton.onClick.AddListener(StartPosteriorCataract);
+        stargardtButton.onClick.AddListener(StartStargardt);
+        macularButton.onClick.AddListener(StartMacularPucker);
+        rpButton.onClick.AddListener(StartRP);
+        backButton.onClick.AddListener(BackToMenu);           // NEW
 
         /* ---- initial UI ---- */
         diseasesPanel.SetActive(false);
@@ -72,7 +73,6 @@ public class MenuManager : MonoBehaviour
     /* ---------------- navigation helpers ---------------- */
     public void ShowDiseases()
     {
-        startPanel.SetActive(false);
         diseasesPanel.SetActive(true);
         backButton.gameObject.SetActive(false);
     }
@@ -102,20 +102,19 @@ public class MenuManager : MonoBehaviour
 
     private void HidePanelsForSimulation()
     {
-        startPanel.SetActive(false);
         diseasesPanel.SetActive(false);
         backButton.gameObject.SetActive(true);
     }
 
     private void DisableAllEffects()
     {
-        corticalEffect.enabled  = false;
-        nuclearEffect.enabled   = false;
+        corticalEffect.enabled = false;
+        nuclearEffect.enabled = false;
         traumaticEffect.enabled = false;
         posteriorEffect.enabled = false;
         stargardtEffect.enabled = false;
-        macularEffect.enabled   = false;
-        rpEffect.enabled        = false;
+        macularEffect.enabled = false;
+        rpEffect.enabled = false;
     }
 
     /* ---------------- mode wrappers ---------------- */
@@ -189,6 +188,19 @@ public class MenuManager : MonoBehaviour
 
         ShowSliderAndInitEffect(rpEffect.Initialize, rpEffect);
     }
+
+    public void StartAMDEffect()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+
+        ShowSliderAndInitEffect(amdEffect.Initialize, amdEffect);
+    }
+
+
+
+
 
     /* ------------ helper to show slider & enable effect ------------ */
     private void ShowSliderAndInitEffect(System.Action<RawImage, Slider, WebCamTexture> init,
