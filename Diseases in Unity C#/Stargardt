@@ -8,26 +8,35 @@ using System.Collections;
 [RequireComponent(typeof(RawImage))]
 public class StargardtEffect : MonoBehaviour
 {
-    [Header("Stargardt Settings")]
+    [Header("Stargardt Parameters")]
+    [Tooltip("Gaussian-blur kernel (odd number)")]
     [SerializeField] private int maxKernelSize = 51;
 
-    private RawImage display;
-    private Slider intensitySlider;
+    [Tooltip("Maximum radius of central vision loss in pixels")]
+    [SerializeField] private float maxCentralLossRadius = 400f;   // ← was 200
+
+    [Tooltip("Random rim roughness extent in pixels")]
+    [SerializeField] private float maxExtension = 75f;
+
+    /* ─── Runtime refs ─── */
+    private RawImage      display;
+    private Slider        intensitySlider;
     private WebCamTexture cam;
-    private Texture2D tex;
+    private Texture2D     tex;
 
-    private Mat matInput;
-    private Mat matProcessed;
-    private Mat stargardtMask;
-    private Mat noiseMap;
+    /* ─── OpenCV buffers ─── */
+    private Mat matInput, matProcessed, matFloat;
+    private Mat stargardtMask, noiseMap, radiusMap, irregular, mask4;
 
-    private bool initialized = false;
+    private bool  initialised     = false;
+    private float lastSliderValue = -1f;
 
+    /* ────────── Public entry point ────────── */
     public void Initialize(RawImage target, Slider slider, WebCamTexture sharedCam)
     {
-        display = target;
+        display         = target;
         intensitySlider = slider;
-        cam = sharedCam;
+        cam             = sharedCam;
 
         if (!cam.isPlaying) cam.Play();
         StartCoroutine(WaitForWebCamInit());
@@ -35,130 +44,112 @@ public class StargardtEffect : MonoBehaviour
 
     IEnumerator WaitForWebCamInit()
     {
-        while (cam.width <= 16)
-            yield return null;
+        while (cam.width <= 16) yield return null;          // wait for camera
 
-        Debug.Log($"WebCam initialized: {cam.width}x{cam.height}");
+        int w = cam.width, h = cam.height;
 
-        int width = cam.width;
-        int height = cam.height;
-
-        tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        tex            = new Texture2D(w, h, TextureFormat.RGBA32, false);
         display.texture = tex;
 
-        matInput = new Mat(height, width, CvType.CV_8UC4);
-        matProcessed = new Mat(height, width, CvType.CV_8UC4);
-        stargardtMask = new Mat(height, width, CvType.CV_32F);
-        noiseMap = generateStaticNoiseMap(height, width);
+        matInput     = new Mat(h, w, CvType.CV_8UC4);
+        matProcessed = new Mat(h, w, CvType.CV_8UC4);
+        matFloat     = new Mat(h, w, CvType.CV_32FC4);
 
-        initialized = true;
+        stargardtMask = new Mat(h, w, CvType.CV_32F);
+        noiseMap      = GenerateStaticNoiseMap(h, w);
+        radiusMap     = CreateRadiusMap(h, w);
+        irregular     = new Mat(h, w, CvType.CV_32F);
+        mask4         = new Mat(h, w, CvType.CV_32FC4);
+
+        initialised = true;
     }
 
+    /* ────────── Update ────────── */
     void Update()
     {
-        if (!initialized || cam == null)
-            return;
+        if (!initialised || !cam.didUpdateThisFrame) return;
 
         Utils.webCamTextureToMat(cam, matInput);
 
-        float t = intensitySlider != null ? intensitySlider.value : 0f;
-        float progression = Mathf.Clamp01(Mathf.Pow(t, 2f));
+        float t = intensitySlider ? intensitySlider.value : 0f;
+        if (!Mathf.Approximately(t, lastSliderValue))
+        {
+            GenerateStargardtMask(Mathf.Clamp01(t * t));   // non-linear
+            lastSliderValue = t;
+        }
 
-        GenerateStargardtMask(progression);
-        ApplyEffects(progression);
-
+        ApplyEffect();
         Utils.fastMatToTexture2D(matProcessed, tex);
     }
 
-    private void GenerateStargardtMask(float progression)
-{
-    if (progression <= 0)
+    /* ────────── Mask generation ────────── */
+    private void GenerateStargardtMask(float p)
     {
-        stargardtMask.setTo(new Scalar(1)); // 1 = no effect (normal vision)
-        return;
+        if (p <= 0f) { stargardtMask.setTo(new Scalar(1f)); return; }
+
+        float radius    = maxCentralLossRadius * p;      // bigger spot
+        float extension = maxExtension        * p;
+        float fade      = Mathf.Max(1f, 40f * p);
+
+        // irregular = radius + noise*extension
+        Core.multiply(noiseMap, new Scalar(extension), irregular);
+        Core.add(irregular, new Scalar(radius), irregular);
+
+        // mask = clamp01( (dist - (irregular - fade/2)) / fade );
+        Core.subtract(radiusMap, irregular, stargardtMask);
+        Core.add(stargardtMask, new Scalar(fade * 0.5f), stargardtMask);
+        Core.divide(stargardtMask, new Scalar(fade), stargardtMask);
+        Core.min(stargardtMask, new Scalar(1f), stargardtMask);
+        Core.max(stargardtMask, new Scalar(0f), stargardtMask);
+
+        Imgproc.GaussianBlur(stargardtMask, stargardtMask,
+                             new Size(maxKernelSize, maxKernelSize), 0);
     }
 
-    int width = matInput.cols();
-    int height = matInput.rows();
-    float cx = width / 2f;
-    float cy = height / 2f;
-
-    float radius = 200 * progression; // smaller radius for central loss
-    float extension = 75 * progression;
-    int fadeWidth = Mathf.FloorToInt(40 * progression);
-
-    for (int y = 0; y < height; y++)
+    /* ────────── Apply effect ────────── */
+    private void ApplyEffect()
     {
-        for (int x = 0; x < width; x++)
+        Imgproc.cvtColor(stargardtMask, mask4, Imgproc.COLOR_GRAY2RGBA);
+
+        matInput.convertTo(matFloat, CvType.CV_32FC4);
+        Core.multiply(matFloat, mask4, matFloat);
+        matFloat.convertTo(matProcessed, CvType.CV_8UC4);
+    }
+
+    /* ────────── Helpers ────────── */
+    private Mat CreateRadiusMap(int h, int w)
+    {
+        Mat r = new Mat(h, w, CvType.CV_32F);
+        float cx = w * 0.5f, cy = h * 0.5f;
+        for (int y = 0; y < h; y++)
         {
-            float dx = x - cx;
-            float dy = y - cy;
-            float dist = Mathf.Sqrt(dx * dx + dy * dy);
-            float localRadius = radius + (float)noiseMap.get(y, x)[0] * extension;
-
-            float value = 1f; // default: no loss
-            if (dist < localRadius - fadeWidth / 2f)
-                value = 0f; // fully blacked out
-            else if (dist < localRadius + fadeWidth / 2f)
-                value = (dist - (localRadius - fadeWidth / 2f)) / fadeWidth;
-
-            stargardtMask.put(y, x, Mathf.Clamp01(value));
+            float dy2 = (y - cy) * (y - cy);
+            for (int x = 0; x < w; x++)
+                r.put(y, x, Mathf.Sqrt((x - cx) * (x - cx) + dy2));
         }
+        return r;
     }
 
-    Imgproc.GaussianBlur(stargardtMask, stargardtMask, new Size(maxKernelSize, maxKernelSize), 0);
-}
-
-
-    private void ApplyEffects(float progression)
+    private Mat GenerateStaticNoiseMap(int h, int w, int blur = 51)
     {
-        matProcessed.setTo(new Scalar(0));
+        Mat n = new Mat(h, w, CvType.CV_32F);
+        Core.randn(n, 0.0, 1.0);
+        Imgproc.GaussianBlur(n, n, new Size(blur, blur), 0);
 
-        int rows = matInput.rows();
-        int cols = matInput.cols();
-
-        for (int y = 0; y < rows; y++)
-        {
-            for (int x = 0; x < cols; x++)
-            {
-                double[] pixel = matInput.get(y, x);
-                float mask = (float)stargardtMask.get(y, x)[0];
-
-                float r = (float)pixel[0] * mask;
-                float g = (float)pixel[1] * mask;
-                float b = (float)pixel[2] * mask;
-
-                matProcessed.put(y, x, new double[] { r, g, b, pixel[3] });
-            }
-        }
+        Core.MinMaxLocResult mm = Core.minMaxLoc(n);
+        Core.subtract(n, new Scalar(mm.minVal), n);
+        Core.divide(n,  new Scalar(mm.maxVal - mm.minVal), n);
+        Core.multiply(n, new Scalar(2.0), n);
+        Core.subtract(n, new Scalar(1.0), n);            // now in [-1,1]
+        return n;
     }
 
-    private Mat generateStaticNoiseMap(int height, int width, int blurSize = 51)
-    {
-        Mat noise = new Mat(height, width, CvType.CV_32F);
-        Core.randn(noise, 0.0, 1.0);
-        Imgproc.GaussianBlur(noise, noise, new Size(blurSize, blurSize), 0);
-
-        Core.MinMaxLocResult mm = Core.minMaxLoc(noise);
-        Core.subtract(noise, new Scalar(mm.minVal), noise);
-        Core.divide(noise, new Scalar(mm.maxVal - mm.minVal), noise);
-        Core.multiply(noise, new Scalar(2.0), noise);
-        Core.subtract(noise, new Scalar(1.0), noise);
-
-        return noise;
-    }
-
-    void OnDisable()
-    {
-        // cam?.Stop();
-    }
-
+    /* ────────── Cleanup ────────── */
     void OnDestroy()
     {
         cam?.Stop();
-        matInput?.Dispose();
-        matProcessed?.Dispose();
-        stargardtMask?.Dispose();
-        noiseMap?.Dispose();
+        matInput?.Dispose();   matProcessed?.Dispose(); matFloat?.Dispose();
+        stargardtMask?.Dispose(); noiseMap?.Dispose(); radiusMap?.Dispose();
+        irregular?.Dispose();   mask4?.Dispose();
     }
 }
