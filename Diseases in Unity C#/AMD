@@ -130,14 +130,16 @@ public class AMDEffect : MonoBehaviour
 
         if (val <= 0.25f)
         {
-            blurProgress = val / 0.25f;       // Map 0.0~0.25 → 0.0~1.0
+            blurProgress = val / 0.25f;  // 0.0~0.25 → 0.0~1.0 (ramp up)
             diseaseProgress = 0f;
         }
         else
         {
-            blurProgress = 1f;
-            diseaseProgress = (val - 0.25f) / 0.75f; // Map 0.25~1.0 → 0.0~1.0
+            float diseaseP = (val - 0.25f) / 0.75f; // 0.25~1.0 → 0.0~1.0
+            blurProgress = Mathf.Lerp(1f, 0.2f, diseaseP);  
+            diseaseProgress = diseaseP;
         }
+
 
         // Update masks and maps ONLY if disease progression changed
         if (!Mathf.Approximately(diseaseProgress, lastVal))
