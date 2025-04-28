@@ -8,246 +8,298 @@ using System.Collections;
 [RequireComponent(typeof(RawImage))]
 public class AMDEffect : MonoBehaviour
 {
-    [Header("AMD Settings")]
-    [SerializeField] private int maxKernelSize = 51;
+    /* ───── Inspector Parameters ───── */
+    [Header("Blur & Black-Spot")]
+    [SerializeField] private int   maxKernelSize       = 51;
     [SerializeField] private float spotStartThreshold = 0.3f;
+    [SerializeField] private float maxOuterRadius     = 300f;
+    [SerializeField] private float maxCoreRadius      = 280f;
 
-    private RawImage display;
-    private Slider intensitySlider;
+    [Header("Wavy Distortion Ring")]
+    [Tooltip("Maximum pixel offset at full progression")]
+    [SerializeField] private float maxDistortionPixels = 10f;
+
+    [Tooltip("Full sine period in pixels")]
+    [SerializeField] private float distortionPeriod = 120f;
+
+    [Tooltip("Pixels added to the core radius before waves begin")]
+    [SerializeField] private float ringExpansion = 15f;
+
+    [Tooltip("Thickness of the wavy band (pixels)")]
+    [SerializeField] private float ringWidth = 35f;
+
+    /* ───── Runtime refs ───── */
+    private RawImage      display;
+    private Slider        slider;
     private WebCamTexture cam;
-    private Texture2D tex;
+    private Texture2D     tex;
 
-    private Mat matInput;
-    private Mat matProcessed;
-    private Mat matBlurred;
-    private Mat blurMask;
-    private Mat spotCoreMask;
-    private Mat spotOuterMask;
-    private Mat noiseMap;
+    /* ───── Video buffers ───── */
+    private Mat src8, blur8;
+    private Mat src32, blur32, warped32, dst32, dst8;
 
-    private bool initialized = false;
+    /* ───── Masks & helpers ───── */
+    private Mat blurMask, spotCoreMask, spotOuterMask;
+    private Mat distortionMask;                 // NEW
+    private Mat edgeMask, noiseMap, radiusMap, irregular, tmp32, ones32;
+    private Mat blur4, invBlur4, coreOuter4;
 
-    public void Initialize(RawImage target, Slider slider, WebCamTexture sharedCam)
+    /* ───── Distortion maps ───── */
+    private Mat baseMapX, baseMapY;         // identity maps
+    private Mat sinX, sinY;                 // pre-baked sine matrices
+    private Mat mapX, mapY;                 // per-frame remap
+
+    /* ───── State ───── */
+    private bool  ready   = false;
+    private float lastVal = -1f, progress = 0f;
+
+    /* ───────── initialise ───────── */
+    public void Initialize(RawImage tgt, Slider s, WebCamTexture sharedCam)
     {
-        display = target;
-        intensitySlider = slider;
-        cam = sharedCam;
-
+        display = tgt; slider = s; cam = sharedCam;
         if (!cam.isPlaying) cam.Play();
-        StartCoroutine(WaitForWebCamInit());
+        StartCoroutine(WaitCam());
     }
 
-    IEnumerator WaitForWebCamInit()
+    IEnumerator WaitCam()
     {
-        while (cam.width <= 16)
-            yield return null;
+        while (cam.width <= 16) yield return null;
+        int w = cam.width, h = cam.height;
 
-        int width = cam.width;
-        int height = cam.height;
-
-        tex = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        /* GPU tex */
+        tex            = new Texture2D(w, h, TextureFormat.RGBA32, false);
         display.texture = tex;
 
-        matInput = new Mat(height, width, CvType.CV_8UC4);
-        matProcessed = new Mat(height, width, CvType.CV_8UC4);
-        matBlurred = new Mat(height, width, CvType.CV_8UC4);
-        blurMask = new Mat(height, width, CvType.CV_32F);
-        spotCoreMask = new Mat(height, width, CvType.CV_32F);
-        spotOuterMask = new Mat(height, width, CvType.CV_32F);
-        noiseMap = generateStaticNoiseMap(height, width);
+        /* video frames */
+        src8   = new Mat(h, w, CvType.CV_8UC4);
+        blur8  = new Mat(h, w, CvType.CV_8UC4);
+        src32  = new Mat(h, w, CvType.CV_32FC4);
+        blur32 = new Mat(h, w, CvType.CV_32FC4);
+        warped32 = new Mat(h, w, CvType.CV_32FC4);
+        dst32  = new Mat(h, w, CvType.CV_32FC4);
+        dst8   = new Mat(h, w, CvType.CV_8UC4);
 
-        initialized = true;
+        /* masks */
+        blurMask       = new Mat(h, w, CvType.CV_32F);
+        spotCoreMask   = new Mat(h, w, CvType.CV_32F);
+        spotOuterMask  = new Mat(h, w, CvType.CV_32F);
+        distortionMask = new Mat(h, w, CvType.CV_32F);   // NEW
+        edgeMask       = new Mat(h, w, CvType.CV_32F);
+
+        /* helpers */
+        noiseMap  = GenNoise(h, w);
+        radiusMap = GenRadius(h, w);
+        irregular = new Mat(h, w, CvType.CV_32F);
+        tmp32     = new Mat(h, w, CvType.CV_32F);
+        ones32    = Mat.ones(h, w, CvType.CV_32F);
+
+        blur4      = new Mat(h, w, CvType.CV_32FC4);
+        invBlur4   = new Mat(h, w, CvType.CV_32FC4);
+        coreOuter4 = new Mat(h, w, CvType.CV_32FC4);
+
+        /* distortion maps ------------------------------------- */
+        baseMapX = new Mat(h, w, CvType.CV_32F);
+        baseMapY = new Mat(h, w, CvType.CV_32F);
+        sinX     = new Mat(h, w, CvType.CV_32F);
+        sinY     = new Mat(h, w, CvType.CV_32F);
+        mapX     = new Mat(h, w, CvType.CV_32F);
+        mapY     = new Mat(h, w, CvType.CV_32F);
+
+        for (int y = 0; y < h; y++)
+        {
+            float sy = Mathf.Sin(2f * Mathf.PI * y / distortionPeriod);
+            for (int x = 0; x < w; x++)
+            {
+                baseMapX.put(y, x, x);
+                baseMapY.put(y, x, y);
+
+                float sx = Mathf.Sin(2f * Mathf.PI * x / distortionPeriod);
+                sinX.put(y, x, sy);      // X offset depends on Y
+                sinY.put(y, x, sx);      // Y offset depends on X
+            }
+        }
+
+        ready = true;
     }
 
+    /* ───────── update ───────── */
     void Update()
     {
-        if (!initialized || cam == null || !cam.didUpdateThisFrame)
-            return;
+        if (!ready || !cam.didUpdateThisFrame) return;
+        Utils.webCamTextureToMat(cam, src8);
 
-        Utils.webCamTextureToMat(cam, matInput);
-
-        float t = intensitySlider != null ? intensitySlider.value : 0f;
-        float progression = Mathf.Clamp01(t);
-
-        GenerateBlurMask(progression);
-        GenerateSpotMask(progression);
-        ApplyEffects(progression);
-
-        Utils.fastMatToTexture2D(matProcessed, tex);
-    }
-
-    private void GenerateBlurMask(float progression)
-    {
-        int width = blurMask.cols();
-        int height = blurMask.rows();
-        float cx = width / 2f;
-        float cy = height / 2f;
-
-        blurMask.setTo(new Scalar(1f));
-
-        float maxRadius = Mathf.Lerp(50f, 200f, progression); // Starts small, grows with progression
-        float fadeWidth = 50f;
-        float noiseScale = 0.05f;
-
-        for (int y = 0; y < height; y++)
+        float val = slider ? slider.value : 0f;
+        if (!Mathf.Approximately(val, lastVal))
         {
-            for (int x = 0; x < width; x++)
-            {
-                float dx = x - cx;
-                float dy = y - cy;
-                float dist = Mathf.Sqrt(dx * dx + dy * dy);
-
-                float perlin = Mathf.PerlinNoise(x * noiseScale, y * noiseScale) * 10f;
-                float rBlur = maxRadius + perlin;
-
-                float maskVal = 1f;
-                if (dist < rBlur - fadeWidth / 2f)
-                    maskVal = 0f;
-                else if (dist < rBlur + fadeWidth / 2f)
-                    maskVal = (dist - (rBlur - fadeWidth / 2f)) / fadeWidth;
-
-                blurMask.put(y, x, Mathf.Clamp01(maskVal));
-            }
+            progress = Mathf.Clamp01(val);
+            BuildMasksAndWarpMaps(progress);
+            lastVal = val;
         }
 
-        int dynamicKernelSize = Mathf.Max(3, (int)(progression * maxKernelSize)); // Dynamic blur strength
-        if (dynamicKernelSize % 2 == 0) dynamicKernelSize++; // Make sure it's odd
-        Imgproc.GaussianBlur(blurMask, blurMask, new Size(dynamicKernelSize, dynamicKernelSize), 0);
+        /* dynamic blur strength */
+        int k = Mathf.Clamp((int)(progress * maxKernelSize), 1, maxKernelSize);
+        if ((k & 1) == 0) k++;
+        Imgproc.GaussianBlur(src8, blur8, new Size(k, k), 0);
+
+        /* float convert */
+        src8.convertTo(src32, CvType.CV_32FC4);
+        blur8.convertTo(blur32, CvType.CV_32FC4);
+
+        /* ----------  apply wavy remap ---------- */
+        Imgproc.remap(src32, warped32, mapX, mapY, Imgproc.INTER_LINEAR);
+
+        /* original / blur blend */
+        Core.multiply(warped32, blur4, dst32);
+        Core.multiply(blur32,  invBlur4, tmp32);
+        Core.add(dst32, tmp32, dst32);
+
+        /* black spot */
+        Core.multiply(dst32, coreOuter4, dst32);
+
+        /* upload */
+        dst32.convertTo(dst8, CvType.CV_8UC4);
+        Utils.fastMatToTexture2D(dst8, tex);
     }
 
-
-    private void GenerateSpotMask(float progression)
+    /* ───────── Build masks + warp maps  ───────── */
+    void BuildMasksAndWarpMaps(float p)
     {
-        int width = matInput.cols();
-        int height = matInput.rows();
-        float cx = width / 2f;
-        float cy = height / 2f;
+        BuildBlurMask(p);
+        BuildSpotMasks(p);                     // builds distortionMask too
 
+        /* Expand blurMask to 4-channel */
+        Imgproc.cvtColor(blurMask, blur4, Imgproc.COLOR_GRAY2RGBA);
+        Core.subtract(ones32, blurMask, tmp32);
+        Imgproc.cvtColor(tmp32, invBlur4, Imgproc.COLOR_GRAY2RGBA);
+
+        Core.multiply(spotCoreMask, spotOuterMask, edgeMask);
+        Imgproc.cvtColor(edgeMask, coreOuter4, Imgproc.COLOR_GRAY2RGBA);
+
+        /* --------- distortion remap --------- */
+        float amp = maxDistortionPixels * p;
+        Core.multiply(sinX, new Scalar(amp), mapX);   // mapX = amp·sinX
+        Core.multiply(sinY, new Scalar(amp), mapY);   // mapY = amp·sinY
+        Core.multiply(mapX, distortionMask, mapX);    // only in ring
+        Core.multiply(mapY, distortionMask, mapY);
+
+        Core.add(baseMapX, mapX, mapX);               // add to identity
+        Core.add(baseMapY, mapY, mapY);
+    }
+
+    /* ───────── individual mask builders ───────── */
+    void BuildBlurMask(float p)
+    {
+        float baseR = Mathf.Lerp(50f, 200f, p);
+        float fade  = 50f;  float amp = 10f;
+
+        Core.multiply(noiseMap, new Scalar(amp), irregular);
+        Core.add(irregular, new Scalar(baseR), irregular);
+
+        Core.subtract(radiusMap, irregular, blurMask);
+        Core.add(blurMask, new Scalar(fade * .5f), blurMask);
+        Core.divide(blurMask, new Scalar(fade), blurMask);
+        Core.min(blurMask, new Scalar(1f), blurMask); Core.max(blurMask, new Scalar(0f), blurMask);
+
+        int k = Mathf.Max(3, (int)(p * maxKernelSize)); if ((k & 1) == 0) k++;
+        Imgproc.GaussianBlur(blurMask, blurMask, new Size(k, k), 0);
+    }
+
+    void BuildSpotMasks(float p)
+    {
         spotCoreMask.setTo(new Scalar(1f));
         spotOuterMask.setTo(new Scalar(1f));
+        distortionMask.setTo(new Scalar(0f));           // reset
 
-        if (progression < spotStartThreshold)
-            return;
+        if (p < spotStartThreshold) return;
 
-        float normalizedProgress = (progression - spotStartThreshold) / (1f - spotStartThreshold);
+        /* --- radii --- */
+        float t  = (p - spotStartThreshold) / (1f - spotStartThreshold);
+        float e  = Mathf.Sqrt(t);
+        float oR = Mathf.Lerp(10f, maxOuterRadius, e);
 
-        float minRadius = 10f;
-        float maxOuterRadius = 150f;
-        float maxCoreRadius = 140f; // A little smaller so it "catches" the outer at the end
+        float d  = 0.4f;
+        float cp = Mathf.Clamp01((e - d) / (1f - d));
+        float cR = Mathf.Lerp(5f, maxCoreRadius, cp);
 
-        // Ease-out for smoother progression
-        float easedProgress = Mathf.Sqrt(normalizedProgress);
+        float fade = 50f; float amp = 10f;
 
-        // Faded outer circle grows immediately
-        float outerRadius = Mathf.Lerp(minRadius, maxOuterRadius, easedProgress);
+        /* -------- outer halo -------- */
+        Core.multiply(noiseMap, new Scalar(amp), irregular);
+        Core.add(irregular, new Scalar(oR), irregular);
+        Core.subtract(radiusMap, irregular, spotOuterMask);
+        Core.add(spotOuterMask, new Scalar(fade * .5f), spotOuterMask);
+        Core.divide(spotOuterMask, new Scalar(fade), spotOuterMask);
+        Core.min(spotOuterMask, new Scalar(1f), spotOuterMask);
+        Core.max(spotOuterMask, new Scalar(0.3f), spotOuterMask);
 
-        // Core black spot grows later
-        float coreStartDelay = 0.4f; // Start growing after 40% progression
-        float coreProgress = Mathf.Clamp01((easedProgress - coreStartDelay) / (1f - coreStartDelay));
-        float coreRadius = Mathf.Lerp(minRadius * 0.5f, maxCoreRadius, coreProgress);
+        /* -------- dark core -------- */
+        Core.add(irregular, new Scalar(cR - oR), irregular);
+        Core.subtract(radiusMap, irregular, spotCoreMask);
+        Core.add(spotCoreMask, new Scalar(fade * .5f), spotCoreMask);
+        Core.divide(spotCoreMask, new Scalar(fade), spotCoreMask);
+        Core.min(spotCoreMask, new Scalar(1f), spotCoreMask);
+        Core.max(spotCoreMask, new Scalar(0f), spotCoreMask);
 
-        float fadeWidth = 50f;
-        float noiseScale = 0.05f;
+        /* -------- wavy ring mask (NEW) -------- */
+        float inner = cR + ringExpansion;
+        float outer = inner + ringWidth;                // outer radius of ring
 
-        for (int y = 0; y < height; y++)
-        {
-            for (int x = 0; x < width; x++)
-            {
-                float dx = x - cx;
-                float dy = y - cy;
-                float dist = Mathf.Sqrt(dx * dx + dy * dy);
+        // tmp32 = radiusMap - inner
+        Core.subtract(radiusMap, new Scalar(inner), tmp32);
+        Core.max(tmp32, new Scalar(0f), tmp32);         // clamp negatives
 
-                float perlin = Mathf.PerlinNoise(x * noiseScale, y * noiseScale) * 10f;
+        // irregular = constant matrix (outer - inner)
+        Core.multiply(ones32, new Scalar(outer - inner), irregular);
 
-                float rCore = coreRadius + perlin;
-                float rOuter = outerRadius + perlin;
+        // tmp32 = (outer-inner) - tmp32
+        Core.subtract(irregular, tmp32, tmp32);
 
-                // Core black spot
-                float coreValue = 1f;
-                if (dist < rCore - fadeWidth / 2f)
-                    coreValue = 0f;
-                else if (dist < rCore + fadeWidth / 2f)
-                    coreValue = (dist - (rCore - fadeWidth / 2f)) / fadeWidth;
-                spotCoreMask.put(y, x, Mathf.Clamp01(coreValue));
+        // distortionMask = clamp01(tmp32 / (outer - inner))
+        Core.divide(tmp32, new Scalar(outer - inner), distortionMask);
+        Core.min(distortionMask, new Scalar(1f), distortionMask);
+        Core.max(distortionMask, new Scalar(0f), distortionMask);
 
-                // Outer faded circle
-                float outerValue = 1f;
-                if (dist < rOuter - fadeWidth / 2f)
-                    outerValue = 0.3f;
-                else if (dist < rOuter + fadeWidth / 2f)
-                    outerValue = Mathf.Lerp(0.3f, 1f, (dist - (rOuter - fadeWidth / 2f)) / fadeWidth);
-                spotOuterMask.put(y, x, Mathf.Clamp01(outerValue));
-            }
-        }
-
-        int dynamicKernelSize = Mathf.Max(3, (int)(easedProgress * maxKernelSize));
-        if (dynamicKernelSize % 2 == 0) dynamicKernelSize++;
-        Imgproc.GaussianBlur(spotCoreMask, spotCoreMask, new Size(dynamicKernelSize, dynamicKernelSize), 0);
-        Imgproc.GaussianBlur(spotOuterMask, spotOuterMask, new Size(dynamicKernelSize, dynamicKernelSize), 0);
+        /* -------- smoothing -------- */
+        int k = Mathf.Max(3, (int)(e * maxKernelSize)); if ((k & 1) == 0) k++;
+        Imgproc.GaussianBlur(spotOuterMask,  spotOuterMask,  new Size(k, k), 0);
+        Imgproc.GaussianBlur(spotCoreMask,   spotCoreMask,   new Size(k, k), 0);
+        Imgproc.GaussianBlur(distortionMask, distortionMask, new Size(k, k), 0);
     }
 
-
-
-
-    private void ApplyEffects(float progression)
+    /* ───────── helpers ───────── */
+    Mat GenRadius(int h, int w)
     {
-        matProcessed.setTo(new Scalar(0));
-
-        int blurKernelSize = Mathf.Clamp((
-
-int)(progression * maxKernelSize), 1, maxKernelSize);
-        if (blurKernelSize % 2 == 0) blurKernelSize++;
-        Imgproc.GaussianBlur(matInput, matBlurred, new Size(blurKernelSize, blurKernelSize), 0);
-
-        int rows = matInput.rows();
-        int cols = matInput.cols();
-
-        for (int y = 0; y < rows; y++)
+        Mat r = new Mat(h, w, CvType.CV_32F);
+        float cx = w * .5f, cy = h * .5f;
+        for (int y = 0; y < h; y++)
         {
-            for (int x = 0; x < cols; x++)
-            {
-                double[] original = matInput.get(y, x);
-                double[] blurred = matBlurred.get(y, x);
-
-                float blurWeight = (float)blurMask.get(y, x)[0];
-                float coreWeight = (float)spotCoreMask.get(y, x)[0];
-                float outerWeight = (float)spotOuterMask.get(y, x)[0];
-
-                float r = Mathf.Lerp(0f, Mathf.Lerp((float)blurred[0], (float)original[0], blurWeight), coreWeight * outerWeight);
-                float g = Mathf.Lerp(0f, Mathf.Lerp((float)blurred[1], (float)original[1], blurWeight), coreWeight * outerWeight);
-                float b = Mathf.Lerp(0f, Mathf.Lerp((float)blurred[2], (float)original[2], blurWeight), coreWeight * outerWeight);
-
-                matProcessed.put(y, x, new double[] { r, g, b, original[3] });
-            }
+            float dy2 = (y - cy) * (y - cy);
+            for (int x = 0; x < w; x++)
+                r.put(y, x, Mathf.Sqrt((x - cx) * (x - cx) + dy2));
         }
+        return r;
     }
-
-    private Mat generateStaticNoiseMap(int height, int width, int blurSize = 51)
+    Mat GenNoise(int h, int w, int blur = 51)
     {
-        Mat noise = new Mat(height, width, CvType.CV_32F);
-        Core.randn(noise, 0.0, 1.0);
-        Imgproc.GaussianBlur(noise, noise, new Size(blurSize, blurSize), 0);
-
-        Core.MinMaxLocResult mm = Core.minMaxLoc(noise);
-        Core.subtract(noise, new Scalar(mm.minVal), noise);
-        Core.divide(noise, new Scalar(mm.maxVal - mm.minVal), noise);
-        Core.multiply(noise, new Scalar(2.0), noise);
-        Core.subtract(noise, new Scalar(1.0), noise);
-
-        return noise;
+        Mat n = new Mat(h, w, CvType.CV_32F);
+        Core.randn(n, 0, 1); Imgproc.GaussianBlur(n, n, new Size(blur, blur), 0);
+        Core.MinMaxLocResult mm = Core.minMaxLoc(n);
+        Core.subtract(n, new Scalar(mm.minVal), n);
+        Core.divide(n, new Scalar(mm.maxVal - mm.minVal), n);
+        Core.multiply(n, new Scalar(2), n); Core.subtract(n, new Scalar(1), n);
+        return n;
     }
 
-    void OnDisable() { /* cam?.Stop(); */ }
-
+    /* ───────── cleanup ───────── */
     void OnDestroy()
     {
         cam?.Stop();
-        matInput?.Dispose();
-        matProcessed?.Dispose();
-        matBlurred?.Dispose();
-        blurMask?.Dispose();
-        spotCoreMask?.Dispose();
-        spotOuterMask?.Dispose();
-        noiseMap?.Dispose();
+        foreach (Mat m in new[]
+        { src8, blur8, src32, blur32, warped32, dst32, dst8,
+          blurMask, spotCoreMask, spotOuterMask, distortionMask,
+          edgeMask, noiseMap, radiusMap, irregular, tmp32, ones32,
+          blur4, invBlur4, coreOuter4,
+          baseMapX, baseMapY, sinX, sinY, mapX, mapY })
+            m?.Dispose();
     }
 }
