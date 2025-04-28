@@ -195,26 +195,40 @@ public class AMDEffect : MonoBehaviour
     {
         float progress = Mathf.Clamp01(p);
 
-        // Both radius and blur strength grow linearly with progress
-        float radius = Mathf.Lerp(50f, 200f, progress); // Circle size grows
-        float fade = 50f, amp = 10f;
+        // Gradually increase the blur radius before the dark spot starts
+        float maxRadius = 350f;
+        float minRadius = 100f;
 
+        // Smooth transition to gradually increase radius before the dark spot
+        float radius = Mathf.Lerp(minRadius, maxRadius, Mathf.SmoothStep(0f, 1f, progress));
+
+        // Weaken blur strength as the progress increases (reverse amplification)
+        float fade = 50f;
+
+        // Reverse the amplification factor as the slider value approaches 1
+        float amp = Mathf.Lerp(0.1f, 0.01f, Mathf.Clamp01(progress));  // Weaker blur as the progress increases
+
+        // Apply noise map with decreasing strength
         Core.multiply(noiseMap, new Scalar(amp), irregular);
-        Core.add(irregular, new Scalar(radius), irregular);
+        Core.add(irregular, new Scalar(radius), irregular); // Apply the increasing radius gradually
 
+        // Subtract the irregular map from the radius map to create the blur mask
         Core.subtract(radiusMap, irregular, blurMask);
+
+        // Soft blending before applying the Gaussian blur to ensure smooth transition
         Core.add(blurMask, new Scalar(fade * 0.5f), blurMask);
         Core.divide(blurMask, new Scalar(fade), blurMask);
         Core.min(blurMask, new Scalar(1f), blurMask);
         Core.max(blurMask, new Scalar(0f), blurMask);
 
-        // Blur strength proportional to progress
+        // Apply Gaussian blur with a subtle kernel size to make the effect smoother
         int minKernelSize = 3;
-        int maxKernelSize = 21; // make it stronger if needed
+        int maxKernelSize = 15; // Use a smaller kernel for a softer blur
         int k = (int)Mathf.Lerp(minKernelSize, maxKernelSize, progress);
 
-        if ((k & 1) == 0) k++; // make sure it's odd for GaussianBlur
+        if ((k & 1) == 0) k++; // Ensure the kernel size is odd for GaussianBlur
 
+        // Apply Gaussian blur to smooth the edges of the mask
         Imgproc.GaussianBlur(blurMask, blurMask, new Size(k, k), 0);
     }
 
