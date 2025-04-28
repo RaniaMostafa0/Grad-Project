@@ -10,37 +10,39 @@ public class RetinitisPigmentosaEffect : MonoBehaviour
 {
     /* ───────────── Inspector settings ───────────── */
     [Header("Tunnel-Vision Parameters")]
-    [SerializeField] private int blurSize = 51;   // Max blur kernel size
-    [SerializeField] private float tunnelStrength = 1.0f;
-    [SerializeField] private float nightBlindnessThreshold = 60f;
-    [SerializeField] private float nightBlindnessFactor = 0.4f;
-    [SerializeField] private float maxBlurAmount = 3f;
+    [SerializeField, Range(3, 201)] private int   blurSize         = 51;   // Gaussian kernel (odd)
+    [SerializeField, Range(0.05f, 0.5f)]
+    private  float rimWidthFraction   = 0.20f;                             // % of shorter side
+    [SerializeField, Range(0f, 1f)]
+    private  float irregularityStrength = 0.40f;                           // 0 = perfect circle
 
     /* ───────────── Runtime references ───────────── */
-    private RawImage display;
-    private Slider intensitySlider;
+    private RawImage      display;
+    private Slider        intensitySlider;
     private WebCamTexture cam;
-    private Texture2D tex;
+    private Texture2D     tex;
 
     /* ───────────── OpenCV mats ───────────── */
-    private Mat matInput, matProcessed;  // 8UC4
-    private Mat matFloat;                // 32FC4
-    private Mat tunnelMask;              // 32F
-    private Mat noiseMap;
-    private Mat radiusMap;
-    private Mat irregular;
-    private Mat mask4;
+    private Mat matInput, matProcessed;   // 8UC4
+    private Mat matFloat;                 // 32FC4
+    private Mat tunnelMask;               // 32F
+    private Mat noiseMap;                 // 32F   (-1 … 1)
+    private Mat radiusMap;                // 32F
+    private Mat tmp;                      // 32F   helper / warped radius
+    private Mat mask4;                    // 32FC4
 
-    private bool initialized = false;
-    private float lastSliderValue = -1f;
+    /* ───────────── Geometry constants ───────────── */
+    private bool  initialized;
+    private float lastSlider  = -1f;
+    private float maxRadius;              // centre → far corner
+    private float rimWidthPx;             // fade-rim width
 
-    /* ─────────────────────────────────────────────── */
-
+    /* ─────────────────── Public entry point ─────────────────── */
     public void Initialize(RawImage target, Slider slider, WebCamTexture sharedCam)
     {
-        display = target;
+        display        = target;
         intensitySlider = slider;
-        cam = sharedCam;
+        cam             = sharedCam;
 
         if (!cam.isPlaying) cam.Play();
         StartCoroutine(WaitForWebCamInit());
@@ -48,49 +50,91 @@ public class RetinitisPigmentosaEffect : MonoBehaviour
 
     IEnumerator WaitForWebCamInit()
     {
-        while (cam.width <= 16) yield return null;
+        while (cam.width <= 16) yield return null;      // wait for webcam
 
         int w = cam.width;
         int h = cam.height;
 
-        tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+        tex            = new Texture2D(w, h, TextureFormat.RGBA32, false);
         display.texture = tex;
 
-        matInput = new Mat(h, w, CvType.CV_8UC4);
+        matInput     = new Mat(h, w, CvType.CV_8UC4);
         matProcessed = new Mat(h, w, CvType.CV_8UC4);
-        matFloat = new Mat(h, w, CvType.CV_32FC4);
+        matFloat     = new Mat(h, w, CvType.CV_32FC4);
 
         tunnelMask = new Mat(h, w, CvType.CV_32F);
-        noiseMap = GenerateNoiseMap(h, w);
-        radiusMap = CreateRadiusMap(h, w);
-        irregular = new Mat(h, w, CvType.CV_32F);
-        mask4 = new Mat(h, w, CvType.CV_32FC4);
+        noiseMap   = GenerateNoiseMap(h, w);
+        radiusMap  = CreateRadiusMap(h, w);
+        tmp        = new Mat(h, w, CvType.CV_32F);
+        mask4      = new Mat(h, w, CvType.CV_32FC4);
+
+        float cx = w * 0.5f, cy = h * 0.5f;
+        maxRadius  = Mathf.Sqrt(cx * cx + cy * cy);
+        rimWidthPx = Mathf.Max(w, h) * rimWidthFraction;
 
         initialized = true;
     }
 
-    /* ───────────────────────── Update ───────────────────────── */
+    /* ─────────────────── Update ─────────────────── */
     void Update()
     {
         if (!initialized || !cam.didUpdateThisFrame) return;
 
         Utils.webCamTextureToMat(cam, matInput);
 
-        float t = intensitySlider ? intensitySlider.value : 0f;
-        float progression = Mathf.Clamp01(t * t);
-
-        if (!Mathf.Approximately(progression, lastSliderValue))
+        float t = intensitySlider ? intensitySlider.value : 0f;   // 0 … 1
+        if (!Mathf.Approximately(t, lastSlider))
         {
-            GenerateIrregularTunnelMask(progression);
-            lastSliderValue = progression;
+            BuildTunnelMask(t);
+            lastSlider = t;
         }
 
-        ApplyCombinedEffect(progression);
-
+        ApplyTunnelEffect();
         Utils.fastMatToTexture2D(matProcessed, tex);
     }
 
-    /* ───────────────────────── Mask building ───────────────────────── */
+    /* ─────────────────── Mask building ─────────────────── */
+    private void BuildTunnelMask(float t)
+    {
+        if (t <= 0.0001f)          // slider at zero → clear view
+        {
+            tunnelMask.setTo(new Scalar(1f));
+            return;
+        }
+
+        /* ----- create warped radius map (bumpy outline) ----- */
+        // tmp = radiusMap  +  noise * (irregularityStrength * rimWidthPx)
+        Core.multiply(noiseMap, new Scalar(irregularityStrength * rimWidthPx), tmp);
+        Core.add(radiusMap, tmp, tmp);                       // tmp == warpedRadius
+
+        /* ----- compute fade based on warped radius ----- */
+        float clearRadius = Mathf.Lerp(maxRadius, 0f, t);    // shrinks with t
+        float rimEnd      = clearRadius + rimWidthPx;
+
+        // tmp = (rimEnd − warpedRadius) / rimWidthPx
+        Core.subtract(tmp, new Scalar(rimEnd), tunnelMask);  // tunnelMask = warpedRadius − rimEnd
+        Core.multiply(tunnelMask, new Scalar(-1.0f), tunnelMask);
+        Core.divide(tunnelMask, new Scalar(rimWidthPx), tunnelMask);
+
+        // clamp 0…1
+        Core.min(tunnelMask, new Scalar(1f), tunnelMask);
+        Core.max(tunnelMask, new Scalar(0f), tunnelMask);
+
+        /* ----- blur for softness ----- */
+        Imgproc.GaussianBlur(tunnelMask, tunnelMask, new Size(blurSize, blurSize), 0);
+    }
+
+    /* ─────────────────── Effect application ─────────────────── */
+    private void ApplyTunnelEffect()
+    {
+        Imgproc.cvtColor(tunnelMask, mask4, Imgproc.COLOR_GRAY2RGBA);
+
+        matInput.convertTo(matFloat, CvType.CV_32FC4);
+        Core.multiply(matFloat, mask4, matFloat);
+        matFloat.convertTo(matProcessed, CvType.CV_8UC4);
+    }
+
+    /* ─────────────────── Helpers ─────────────────── */
     private Mat CreateRadiusMap(int h, int w)
     {
         Mat r = new Mat(h, w, CvType.CV_32F);
@@ -108,104 +152,27 @@ public class RetinitisPigmentosaEffect : MonoBehaviour
         return r;
     }
 
-    private void GenerateIrregularTunnelMask(float p)
-    {
-        if (p <= 0f)
-        {
-            tunnelMask.setTo(new Scalar(1f));
-            return;
-        }
-
-        float baseRadius = Mathf.Lerp(Mathf.Min(matInput.cols(), matInput.rows()) * 0.5f, 0f, p);
-
-        Core.multiply(noiseMap, new Scalar(0.4f), irregular);  // 0.4 * noise
-        Core.add(irregular, Scalar.all(1.0), irregular);       // 1 + ...
-        Core.multiply(irregular, new Scalar(baseRadius), irregular);
-
-        Core.subtract(irregular, radiusMap, tunnelMask);
-        Core.divide(tunnelMask, new Scalar(80f), tunnelMask);
-        Core.min(tunnelMask, new Scalar(1f), tunnelMask);
-        Core.max(tunnelMask, new Scalar(0f), tunnelMask);
-
-        Imgproc.GaussianBlur(tunnelMask, tunnelMask, new Size(blurSize, blurSize), 0);
-    }
-
-    /* ───────────────────────── Combined effect ───────────────────────── */
-    private void ApplyCombinedEffect(float progression)
-    {
-        matInput.convertTo(matFloat, CvType.CV_32FC4);
-
-        // Expand tunnel mask to 4 channels
-        Imgproc.cvtColor(tunnelMask, mask4, Imgproc.COLOR_GRAY2RGBA);
-
-        // Multiply image by mask
-        Core.multiply(matFloat, mask4, matFloat);
-
-        // Handle night blindness (dim + blur)
-        float averageBrightness = GetAverageBrightness(matInput);
-        float nightMultiplier = 1f;
-        float blurIntensity = 0f;
-
-        if (averageBrightness < nightBlindnessThreshold)
-        {
-            float darkRatio = Mathf.InverseLerp(nightBlindnessThreshold, 0f, averageBrightness);
-            float adjustedProgression = Mathf.Pow(progression, 1.5f);
-            float adjustedDarkRatio = Mathf.Pow(darkRatio, 1.5f);
-
-            nightMultiplier = Mathf.Lerp(nightBlindnessFactor, 1f, adjustedDarkRatio);
-            blurIntensity = Mathf.Lerp(0f, maxBlurAmount, adjustedDarkRatio * adjustedProgression);
-        }
-
-        // Apply night dimming
-        Core.multiply(matFloat, new Scalar(nightMultiplier, nightMultiplier, nightMultiplier, 1f), matFloat);
-
-        // Convert back to 8-bit
-        matFloat.convertTo(matProcessed, CvType.CV_8UC4);
-
-        // Apply additional blur if necessary
-        if (blurIntensity > 0.01f)
-        {
-            int ksize = Mathf.RoundToInt(blurSize * blurIntensity);
-            ksize = Mathf.Clamp(ksize | 1, 3, 51); // must be odd
-            Imgproc.GaussianBlur(matProcessed, matProcessed, new Size(ksize, ksize), 0);
-        }
-    }
-
-    /* ───────────────────────── Utilities ───────────────────────── */
-    private float GetAverageBrightness(Mat mat)
-    {
-        Mat gray = new Mat();
-        Imgproc.cvtColor(mat, gray, Imgproc.COLOR_RGBA2GRAY);
-        Scalar meanScalar = Core.mean(gray);
-        gray.Dispose();
-        return (float)meanScalar.val[0];
-    }
-
     private Mat GenerateNoiseMap(int h, int w)
     {
         Mat n = new Mat(h, w, CvType.CV_32F);
-        Core.randn(n, 0.0, 1.0);
+        Core.randn(n, 0.0, 1.0);                          // white noise
         Imgproc.GaussianBlur(n, n, new Size(blurSize, blurSize), 0);
 
+        // normalise to [-1 … 1]
         Core.MinMaxLocResult mm = Core.minMaxLoc(n);
         Core.subtract(n, new Scalar(mm.minVal), n);
-        Core.divide(n, new Scalar(mm.maxVal - mm.minVal), n);
+        Core.divide(n,  new Scalar(mm.maxVal - mm.minVal), n);
         Core.multiply(n, new Scalar(2.0), n);
         Core.subtract(n, new Scalar(1.0), n);
         return n;
     }
 
-    /* ───────────────────────── Cleanup ───────────────────────── */
+    /* ─────────────────── Cleanup ─────────────────── */
     void OnDestroy()
     {
         cam?.Stop();
-        matInput?.Dispose();
-        matProcessed?.Dispose();
-        matFloat?.Dispose();
-        tunnelMask?.Dispose();
-        noiseMap?.Dispose();
-        radiusMap?.Dispose();
-        irregular?.Dispose();
-        mask4?.Dispose();
+        matInput?.Dispose();  matProcessed?.Dispose();  matFloat?.Dispose();
+        tunnelMask?.Dispose(); noiseMap?.Dispose();     radiusMap?.Dispose();
+        tmp?.Dispose();        mask4?.Dispose();
     }
 }
