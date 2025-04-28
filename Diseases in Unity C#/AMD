@@ -10,10 +10,10 @@ public class AMDEffect : MonoBehaviour
 {
     /* ───── Inspector Parameters ───── */
     [Header("Blur & Black-Spot")]
-    [SerializeField] private int   maxKernelSize       = 51;
+    [SerializeField] private int maxKernelSize = 51;
     [SerializeField] private float spotStartThreshold = 0.3f;
-    [SerializeField] private float maxOuterRadius     = 300f;
-    [SerializeField] private float maxCoreRadius      = 280f;
+    [SerializeField] private float maxOuterRadius = 300f;
+    [SerializeField] private float maxCoreRadius = 280f;
 
     [Header("Organic Extensions")]
     [Tooltip("Largest outward push (pixels) given to the core outline at full progression")]
@@ -21,15 +21,15 @@ public class AMDEffect : MonoBehaviour
 
     [Header("Wavy Distortion Ring")]
     [SerializeField] private float maxDistortionPixels = 10f;   // max sine offset
-    [SerializeField] private float distortionPeriod    = 120f;  // sine wavelength
-    [SerializeField] private float ringExpansion       = 15f;   // ring starts this far past core
-    [SerializeField] private float ringWidth           = 35f;   // ring thickness
+    [SerializeField] private float distortionPeriod = 120f;  // sine wavelength
+    [SerializeField] private float ringExpansion = 15f;   // ring starts this far past core
+    [SerializeField] private float ringWidth = 35f;   // ring thickness
 
     /* ───── Runtime refs ───── */
-    private RawImage      display;
-    private Slider        slider;
+    private RawImage display;
+    private Slider slider;
     private WebCamTexture cam;
-    private Texture2D     tex;
+    private Texture2D tex;
 
     /* ───── Video buffers ───── */
     private Mat src8, blur8;
@@ -45,7 +45,7 @@ public class AMDEffect : MonoBehaviour
     private Mat baseMapX, baseMapY, sinX, sinY, mapX, mapY;
 
     /* ───── State ───── */
-    private bool  ready   = false;
+    private bool ready = false;
     private float lastVal = -1f, progress = 0f;
 
     /* ───────── initialise ───────── */
@@ -62,43 +62,43 @@ public class AMDEffect : MonoBehaviour
         int w = cam.width, h = cam.height;
 
         /* GPU tex */
-        tex            = new Texture2D(w, h, TextureFormat.RGBA32, false);
+        tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
         display.texture = tex;
 
         /* video frames */
-        src8  = new Mat(h, w, CvType.CV_8UC4);
+        src8 = new Mat(h, w, CvType.CV_8UC4);
         blur8 = new Mat(h, w, CvType.CV_8UC4);
         src32 = new Mat(h, w, CvType.CV_32FC4);
-        blur32= new Mat(h, w, CvType.CV_32FC4);
+        blur32 = new Mat(h, w, CvType.CV_32FC4);
         warped32 = new Mat(h, w, CvType.CV_32FC4);
         dst32 = new Mat(h, w, CvType.CV_32FC4);
-        dst8  = new Mat(h, w, CvType.CV_8UC4);
+        dst8 = new Mat(h, w, CvType.CV_8UC4);
 
         /* masks */
-        blurMask       = new Mat(h, w, CvType.CV_32F);
-        spotCoreMask   = new Mat(h, w, CvType.CV_32F);
-        spotOuterMask  = new Mat(h, w, CvType.CV_32F);
+        blurMask = new Mat(h, w, CvType.CV_32F);
+        spotCoreMask = new Mat(h, w, CvType.CV_32F);
+        spotOuterMask = new Mat(h, w, CvType.CV_32F);
         distortionMask = new Mat(h, w, CvType.CV_32F);
-        edgeMask       = new Mat(h, w, CvType.CV_32F);
+        edgeMask = new Mat(h, w, CvType.CV_32F);
 
         /* helpers */
-        noiseMap  = GenNoise(h, w, 111);      // smooth noise −1..+1
+        noiseMap = GenNoise(h, w, 111);      // smooth noise −1..+1
         radiusMap = GenRadius(h, w);
         irregular = new Mat(h, w, CvType.CV_32F);
-        tmp32     = new Mat(h, w, CvType.CV_32F);
-        ones32    = Mat.ones(h, w, CvType.CV_32F);
+        tmp32 = new Mat(h, w, CvType.CV_32F);
+        ones32 = Mat.ones(h, w, CvType.CV_32F);
 
-        blur4      = new Mat(h, w, CvType.CV_32FC4);
-        invBlur4   = new Mat(h, w, CvType.CV_32FC4);
+        blur4 = new Mat(h, w, CvType.CV_32FC4);
+        invBlur4 = new Mat(h, w, CvType.CV_32FC4);
         coreOuter4 = new Mat(h, w, CvType.CV_32FC4);
 
         /* pre-compute identity & sine tables */
         baseMapX = new Mat(h, w, CvType.CV_32F);
         baseMapY = new Mat(h, w, CvType.CV_32F);
-        sinX     = new Mat(h, w, CvType.CV_32F);
-        sinY     = new Mat(h, w, CvType.CV_32F);
-        mapX     = new Mat(h, w, CvType.CV_32F);
-        mapY     = new Mat(h, w, CvType.CV_32F);
+        sinX = new Mat(h, w, CvType.CV_32F);
+        sinY = new Mat(h, w, CvType.CV_32F);
+        mapX = new Mat(h, w, CvType.CV_32F);
+        mapY = new Mat(h, w, CvType.CV_32F);
 
         for (int y = 0; y < h; y++)
         {
@@ -123,24 +123,42 @@ public class AMDEffect : MonoBehaviour
         Utils.webCamTextureToMat(cam, src8);
 
         float val = slider ? slider.value : 0f;
-        if (!Mathf.Approximately(val, lastVal))
+
+        // ----------- NEW PROGRESS MAPPING -----------
+        float blurProgress;
+        float diseaseProgress;
+
+        if (val <= 0.25f)
         {
-            progress = Mathf.Clamp01(val);
-            BuildMasksAndWarpMaps(progress);
-            lastVal = val;
+            blurProgress = val / 0.25f;       // Map 0.0~0.25 → 0.0~1.0
+            diseaseProgress = 0f;
+        }
+        else
+        {
+            blurProgress = 1f;
+            diseaseProgress = (val - 0.25f) / 0.75f; // Map 0.25~1.0 → 0.0~1.0
         }
 
-        int k = Mathf.Clamp((int)(progress * maxKernelSize), 1, maxKernelSize);
+        // Update masks and maps ONLY if disease progression changed
+        if (!Mathf.Approximately(diseaseProgress, lastVal))
+        {
+            progress = Mathf.Clamp01(diseaseProgress);
+            BuildMasksAndWarpMaps(progress);
+            lastVal = diseaseProgress;
+        }
+
+        // Apply Gaussian blur using BLUR PROGRESS
+        int k = Mathf.Clamp((int)(blurProgress * maxKernelSize), 1, maxKernelSize);
         if ((k & 1) == 0) k++;
         Imgproc.GaussianBlur(src8, blur8, new Size(k, k), 0);
 
-        src8.convertTo(src32,  CvType.CV_32FC4);
+        src8.convertTo(src32, CvType.CV_32FC4);
         blur8.convertTo(blur32, CvType.CV_32FC4);
 
         Imgproc.remap(src32, warped32, mapX, mapY, Imgproc.INTER_LINEAR);
 
         Core.multiply(warped32, blur4, dst32);
-        Core.multiply(blur32,  invBlur4, tmp32);
+        Core.multiply(blur32, invBlur4, tmp32);
         Core.add(dst32, tmp32, dst32);
 
         Core.multiply(dst32, coreOuter4, dst32);  // dark irregular spot
@@ -148,6 +166,7 @@ public class AMDEffect : MonoBehaviour
         dst32.convertTo(dst8, CvType.CV_8UC4);
         Utils.fastMatToTexture2D(dst8, tex);
     }
+
 
     /* ───────── Build masks + warp maps  ───────── */
     void BuildMasksAndWarpMaps(float p)
@@ -174,21 +193,45 @@ public class AMDEffect : MonoBehaviour
     /* ---------------- blur mask ---------------- */
     void BuildBlurMask(float p)
     {
-        float baseR = Mathf.Lerp(50f, 200f, p);
-        float fade = 50f, amp = 10f;
+        float progress = Mathf.Clamp01(p);
 
+        // Gradually increase the blur radius before the dark spot starts
+        float maxRadius = 350f;
+        float minRadius = 100f;
+
+        // Smooth transition to gradually increase radius before the dark spot
+        float radius = Mathf.Lerp(minRadius, maxRadius, Mathf.SmoothStep(0f, 1f, progress));
+
+        // Weaken blur strength as the progress increases (reverse amplification)
+        float fade = 50f;
+
+        // Reverse the amplification factor as the slider value approaches 1
+        float amp = Mathf.Lerp(0.1f, 0.01f, Mathf.Clamp01(progress));  // Weaker blur as the progress increases
+
+        // Apply noise map with decreasing strength
         Core.multiply(noiseMap, new Scalar(amp), irregular);
-        Core.add(irregular, new Scalar(baseR), irregular);
+        Core.add(irregular, new Scalar(radius), irregular); // Apply the increasing radius gradually
 
+        // Subtract the irregular map from the radius map to create the blur mask
         Core.subtract(radiusMap, irregular, blurMask);
-        Core.add(blurMask, new Scalar(fade * .5f), blurMask);
+
+        // Soft blending before applying the Gaussian blur to ensure smooth transition
+        Core.add(blurMask, new Scalar(fade * 0.5f), blurMask);
         Core.divide(blurMask, new Scalar(fade), blurMask);
         Core.min(blurMask, new Scalar(1f), blurMask);
         Core.max(blurMask, new Scalar(0f), blurMask);
 
-        int k = Mathf.Max(3, (int)(p * maxKernelSize)); if ((k & 1) == 0) k++;
+        // Apply Gaussian blur with a subtle kernel size to make the effect smoother
+        int minKernelSize = 3;
+        int maxKernelSize = 15; // Use a smaller kernel for a softer blur
+        int k = (int)Mathf.Lerp(minKernelSize, maxKernelSize, progress);
+
+        if ((k & 1) == 0) k++; // Ensure the kernel size is odd for GaussianBlur
+
+        // Apply Gaussian blur to smooth the edges of the mask
         Imgproc.GaussianBlur(blurMask, blurMask, new Size(k, k), 0);
     }
+
 
     /* ---------------- irregular spot + ring ---------------- */
     void BuildSpotMasks(float p)
@@ -199,11 +242,11 @@ public class AMDEffect : MonoBehaviour
 
         if (p < spotStartThreshold) return;
 
-        float t  = (p - spotStartThreshold) / (1f - spotStartThreshold);
-        float e  = Mathf.Sqrt(t);
+        float t = (p - spotStartThreshold) / (1f - spotStartThreshold);
+        float e = Mathf.Sqrt(t);
         float oR = Mathf.Lerp(10f, maxOuterRadius, e);
 
-        float d  = 0.4f;
+        float d = 0.4f;
         float cp = Mathf.Clamp01((e - d) / (1f - d));
         float cR = Mathf.Lerp(5f, maxCoreRadius, cp);
 
@@ -243,8 +286,8 @@ public class AMDEffect : MonoBehaviour
 
         /* ---------- smooth ---------- */
         int k = Mathf.Max(3, (int)(e * maxKernelSize)); if ((k & 1) == 0) k++;
-        Imgproc.GaussianBlur(spotOuterMask,  spotOuterMask,  new Size(k, k), 0);
-        Imgproc.GaussianBlur(spotCoreMask,   spotCoreMask,   new Size(k, k), 0);
+        Imgproc.GaussianBlur(spotOuterMask, spotOuterMask, new Size(k, k), 0);
+        Imgproc.GaussianBlur(spotCoreMask, spotCoreMask, new Size(k, k), 0);
         Imgproc.GaussianBlur(distortionMask, distortionMask, new Size(k, k), 0);
     }
 
