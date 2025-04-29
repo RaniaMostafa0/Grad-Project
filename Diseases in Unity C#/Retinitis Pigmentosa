@@ -8,143 +8,189 @@ using System.Collections;
 [RequireComponent(typeof(RawImage))]
 public class RetinitisPigmentosaEffect : MonoBehaviour
 {
-    /* ───────────── Inspector settings ───────────── */
-    [Header("Tunnel-Vision Parameters")]
-    [SerializeField, Range(3, 201)]  private int   blurSize           = 51;  // Gaussian kernel (odd)
-    [SerializeField, Range(0.05f, .5f)]
-    private  float rimWidthFraction   = .20f;                                // % of shorter side
-    [SerializeField, Range(0f, 1f)]  private float irregularityStrength = .40f;
-    [Space]
-    [Tooltip("Top part of the slider that fades the last light to black")]
-    [SerializeField, Range(.05f, .5f)]
-    private  float fullBlindFraction  = .10f;                                // top 10 %
+    /* ───────── Inspector knobs ───────── */
+    [Header("Tunnel vision")]
+    [Range(3, 201)] public int blurSize = 51;     // base kernel (odd)
+    [Range(.05f, .5f)] public float rimWidthFraction = .20f;   // rim width (% of shorter side)
+    [Range(0f, 1f)] public float irregularityStrength = .40f;   // ripple strength
 
-    /* ───────────── Runtime refs & Mats (unchanged) ───────────── */
-    private RawImage      display;
-    private Slider        intensitySlider;
-    private WebCamTexture cam;            private Texture2D tex;
+    [Header("Slider-based night blindness")]
+    [Tooltip("Brightness at slider==1 before blackout (0-1)")]
+    [Range(.1f, 1f)] public float minBrightnessAtNight = .40f;
 
-    private Mat matInput,   matProcessed; private Mat matFloat;
-    private Mat tunnelMask, noiseMap, radiusMap, tmp, mask4;
+    [Header("Scene-dependent night blindness")]
+    [Tooltip("Average scene brightness below which additional dim+blur kick in")]
+    public float nightBlindnessThreshold = 60f;   // 0-255 gray
+    [Tooltip("How dark it can become (0-1) when scene is pitch black")]
+    [Range(.1f, 1f)] public float nightBlindnessFactor = .4f;
+    [Tooltip("Extra blur multiplier when scene is totally dark")]
+    public float maxBlurAmount = 3f;              // × blurSize
 
-    private bool  initialised;            private float lastT = -1f;
-    private float maxRadius, rimWidthPx;
+    [Header("Full blackout")]
+    [Range(.05f, .5f)] public float fullBlindFraction = .10f;    // top 10 % of slider
 
-    /* ───────────────── entry point ───────────────── */
+    /* ───────── Runtime refs ───────── */
+    RawImage display; Slider intensitySlider;
+    WebCamTexture cam; Texture2D tex;
+
+    /* ───────── OpenCV mats ───────── */
+    Mat matInput, matProcessed, matFloat;
+    Mat tunnelMask, noiseMap, radiusMap, tmp, mask4;
+
+    /* ───────── State ───────── */
+    bool ready; float lastSlider = -1f;
+    float maxRadius, rimWidthPx;
+
+    /* ─────────────────── PUBLIC ENTRY ─────────────────── */
     public void Initialize(RawImage target, Slider slider, WebCamTexture sharedCam)
     {
-        display = target; intensitySlider = slider; cam = sharedCam;
-        if (!cam.isPlaying) cam.Play();
-        StartCoroutine(WaitForCam());
+        display = target; intensitySlider = slider;
+
+        /* camera discovery */
+        if (sharedCam != null) cam = sharedCam;
+        else if (WebCamTexture.devices.Length > 0)
+            cam = new WebCamTexture(WebCamTexture.devices[0].name, 1280, 720);
+        else cam = null;
+
+        if (cam != null && !cam.isPlaying) cam.Play();
+        StartCoroutine(SetupWhenReady());
     }
 
-    IEnumerator WaitForCam()
+    IEnumerator SetupWhenReady()
     {
-        while (cam.width <= 16) yield return null;
+        while (cam != null && cam.width <= 16) yield return null;
 
-        int w = cam.width, h = cam.height;
+        int w = cam ? cam.width : 1280;
+        int h = cam ? cam.height : 720;
+
         tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
         display.texture = tex;
 
-        matInput  = new Mat(h, w, CvType.CV_8UC4);
+        matInput = new Mat(h, w, CvType.CV_8UC4);
         matProcessed = new Mat(h, w, CvType.CV_8UC4);
-        matFloat  = new Mat(h, w, CvType.CV_32FC4);
+        matFloat = new Mat(h, w, CvType.CV_32FC4);
 
         tunnelMask = new Mat(h, w, CvType.CV_32F);
-        noiseMap   = GenNoise(h, w);
-        radiusMap  = GenRadius(h, w);
-        tmp        = new Mat(h, w, CvType.CV_32F);
-        mask4      = new Mat(h, w, CvType.CV_32FC4);
+        noiseMap = GenNoise(h, w);
+        radiusMap = GenRadius(h, w);
+        tmp = new Mat(h, w, CvType.CV_32F);
+        mask4 = new Mat(h, w, CvType.CV_32FC4);
 
         float cx = w * .5f, cy = h * .5f;
-        maxRadius  = Mathf.Sqrt(cx*cx + cy*cy);
+        maxRadius = Mathf.Sqrt(cx * cx + cy * cy);
         rimWidthPx = Mathf.Max(w, h) * rimWidthFraction;
 
-        initialised = true;
+        ready = true;
     }
 
-    /* ───────────────── update ───────────────── */
+    /* ─────────────────── UPDATE ─────────────────── */
     void Update()
     {
-        if (!initialised || !cam.didUpdateThisFrame) return;
+        if (!ready) return;
+        if (cam != null && !cam.didUpdateThisFrame) return;
 
-        Utils.webCamTextureToMat(cam, matInput);
+        /* copy frame */
+        if (cam != null) Utils.webCamTextureToMat(cam, matInput);
+        else matInput.setTo(new Scalar(0, 0, 0, 255));
 
         float t = intensitySlider ? intensitySlider.value : 0f;
-        if (!Mathf.Approximately(t, lastT))
-        {
-            BuildMask(t);
-            lastT = t;
-        }
+        if (!Mathf.Approximately(t, lastSlider)) { BuildTunnelMask(t); lastSlider = t; }
 
-        ApplyMask();
+        ApplyEffects(t);
         Utils.fastMatToTexture2D(matProcessed, tex);
     }
 
-    /* ───────────────── mask builder ───────────────── */
-    void BuildMask(float t)
+    /* ───────── Tunnel mask ───────── */
+    void BuildTunnelMask(float t)
     {
         if (t < 1e-4f) { tunnelMask.setTo(new Scalar(1)); return; }
 
-        /* ----- 1. warped-radius tunnel (as before) ----- */
+        // warped radius
         Core.multiply(noiseMap, new Scalar(irregularityStrength * rimWidthPx), tmp);
-        Core.add(radiusMap, tmp, tmp);                          // tmp = warped radius
+        Core.add(radiusMap, tmp, tmp);
 
-        float clearR  = Mathf.Lerp(maxRadius, 0f, t);
-        float rimEnd  = clearR + rimWidthPx;
+        float clearR = Mathf.Lerp(maxRadius, 0f, t);
+        float rimEnd = clearR + rimWidthPx;
 
-        Core.subtract(tmp, new Scalar(rimEnd), tunnelMask);     // radius - rimEnd
+        Core.subtract(tmp, new Scalar(rimEnd), tunnelMask);
         Core.multiply(tunnelMask, new Scalar(-1f), tunnelMask);
-        Core.divide  (tunnelMask, new Scalar(rimWidthPx), tunnelMask);
+        Core.divide(tunnelMask, new Scalar(rimWidthPx), tunnelMask);
         Core.min(tunnelMask, new Scalar(1), tunnelMask);
         Core.max(tunnelMask, new Scalar(0), tunnelMask);
 
-        /* ----- 2. stage-two global fade (top slider segment) ----- */
-        float blindStart = 1f - fullBlindFraction;              // e.g. 0.90
-        if (t > blindStart)
+        // top-slider blackout
+        float startFade = 1f - fullBlindFraction;
+        if (t > startFade)
         {
-            float k = (t - blindStart) / fullBlindFraction;     // 0→1 across final stretch
-            float global = 1f - k;                              // 1→0   (linear)*
-            Core.multiply(tunnelMask, new Scalar(global), tunnelMask);
+            float k = (t - startFade) / fullBlindFraction;
+            Core.multiply(tunnelMask, new Scalar(1f - k), tunnelMask);
         }
-        /*  *swap `global = Mathf.Pow(1f - k, 2)` if you want a smoother ease-out */
 
         Imgproc.GaussianBlur(tunnelMask, tunnelMask, new Size(blurSize, blurSize), 0);
     }
 
-    /* ───────────────── apply & util (unchanged) ───────────────── */
-    void ApplyMask()
+    /* ───────── Apply combined effects ───────── */
+    void ApplyEffects(float t)
     {
-        Imgproc.cvtColor(tunnelMask, mask4, Imgproc.COLOR_GRAY2RGBA);
+        /* 1️⃣  copy + slider-based brightness (night blindness progression) */
         matInput.convertTo(matFloat, CvType.CV_32FC4);
+        float sliderBrightness = Mathf.Lerp(1f, minBrightnessAtNight, t);
+        Core.multiply(matFloat, new Scalar(sliderBrightness, sliderBrightness, sliderBrightness, 1), matFloat);
+
+        /* 2️⃣  scene-dependent night blindness */
+        float avg = GetAverageBrightness(matInput);
+        if (avg < nightBlindnessThreshold)
+        {
+            float darkRatio = Mathf.InverseLerp(nightBlindnessThreshold, 0f, avg);          // 0→1 dark
+            darkRatio = Mathf.Pow(darkRatio, 1.5f);                                       // ease
+            float nightMult = Mathf.Lerp(nightBlindnessFactor, 1f, darkRatio);
+            Core.multiply(matFloat, new Scalar(nightMult, nightMult, nightMult, 1), matFloat);
+
+            float blurRatio = Mathf.Pow(darkRatio, 1.5f) * Mathf.Pow(t, 1.5f);
+            float blurIntensity = Mathf.Lerp(0f, maxBlurAmount, blurRatio);
+            if (blurIntensity > 0.01f)
+            {
+                int k = Mathf.Clamp((blurSize * blurIntensity) < 3 ? 3 : (int)(blurSize * blurIntensity) | 1, 3, 51);
+                Imgproc.GaussianBlur(matFloat, matFloat, new Size(k, k), 0);
+            }
+        }
+
+        /* 3️⃣  tunnel mask */
+        Imgproc.cvtColor(tunnelMask, mask4, Imgproc.COLOR_GRAY2RGBA);
         Core.multiply(matFloat, mask4, matFloat);
+
         matFloat.convertTo(matProcessed, CvType.CV_8UC4);
+    }
+
+    /* ───────── Helpers ───────── */
+    float GetAverageBrightness(Mat m)
+    {
+        Mat g = new Mat(); Imgproc.cvtColor(m, g, Imgproc.COLOR_RGBA2GRAY);
+        double mean = Core.mean(g).val[0]; g.Dispose(); return (float)mean;
     }
 
     Mat GenRadius(int h, int w)
     {
-        Mat r = new Mat(h, w, CvType.CV_32F);
-        float cx = w*.5f, cy = h*.5f;
-        for (int y=0; y<h; y++){
-            float dy2 = (y-cy)*(y-cy);
-            for(int x=0;x<w;x++){
-                float dx2 = (x-cx)*(x-cx);
-                r.put(y,x, Mathf.Sqrt(dx2+dy2));
-            }}
+        Mat r = new Mat(h, w, CvType.CV_32F); float cx = w * .5f, cy = h * .5f;
+        for (int y = 0; y < h; y++)
+        {
+            float dy2 = (y - cy) * (y - cy);
+            for (int x = 0; x < w; x++) { float dx2 = (x - cx) * (x - cx); r.put(y, x, Mathf.Sqrt(dx2 + dy2)); }
+        }
         return r;
     }
-    Mat GenNoise(int h,int w)
+    Mat GenNoise(int h, int w)
     {
-        Mat n=new Mat(h,w,CvType.CV_32F);
-        Core.randn(n,0,1);
-        Imgproc.GaussianBlur(n,n,new Size(blurSize,blurSize),0);
-        Core.MinMaxLocResult mm=Core.minMaxLoc(n);
-        Core.subtract(n,new Scalar(mm.minVal),n);
-        Core.divide(n,new Scalar(mm.maxVal-mm.minVal),n);
-        Core.multiply(n,new Scalar(2),n);
-        Core.subtract(n,new Scalar(1),n);
+        Mat n = new Mat(h, w, CvType.CV_32F); Core.randn(n, 0, 1);
+        Imgproc.GaussianBlur(n, n, new Size(blurSize, blurSize), 0);
+        Core.MinMaxLocResult mm = Core.minMaxLoc(n);
+        Core.subtract(n, new Scalar(mm.minVal), n);
+        Core.divide(n, new Scalar(mm.maxVal - mm.minVal), n);
+        Core.multiply(n, new Scalar(2), n); Core.subtract(n, new Scalar(1), n);
         return n;
     }
+
+    /* ───────── Cleanup ───────── */
     void OnDestroy()
     {
         cam?.Stop();
