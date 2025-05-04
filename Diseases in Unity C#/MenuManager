@@ -74,6 +74,7 @@ public class MenuManager : MonoBehaviour
     public void ShowDiseases()
     {
         diseasesPanel.SetActive(true);
+        startButton.gameObject.SetActive(false);
         backButton.gameObject.SetActive(false);
     }
 
