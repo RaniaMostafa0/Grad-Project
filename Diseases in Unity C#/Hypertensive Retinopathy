@@ -120,7 +120,8 @@ public class HypertensiveRetinopathyEffect : MonoBehaviour
         List<Mat> channels = new List<Mat>();
         Core.split(lab, channels);
 
-        float factor = (p < 0.25f) ? 1.0f : (p < 0.5f) ? 1.0f - (p - 0.25f) / 0.25f * (1.0f - minContrast) : minContrast;
+        // Updated contrast logic to start from p = 0
+        float factor = (p < 0.5f) ? 1.0f - p / 0.5f * (1.0f - minContrast) : minContrast;
         Core.addWeighted(channels[0], factor, new Mat(channels[0].size(), channels[0].type(), new Scalar(128)), 1f - factor, 0, channels[0]);
 
         Core.merge(channels, lab);
