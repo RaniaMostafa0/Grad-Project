@@ -1,0 +1,169 @@
+// CSCRSimulationEffect.cs
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+
+[RequireComponent(typeof(RawImage))]
+public class AcuteCSCREffect : MonoBehaviour
+{
+    [Header("Progression Control")]
+    [SerializeField] private Slider progressionSlider;
+
+    [Header("Effect Parameters")]
+    [SerializeField] private float sineFreq = 2f;
+    [SerializeField] private float cosineFreq = 2f;
+    [SerializeField] private float distortionStrength = 1.5f;
+    [SerializeField] private float micropsiaMinScale = 1.0f;
+    [SerializeField] private float micropsiaMaxScale = 0.85f;
+
+    private RawImage display;
+    private WebCamTexture cam;
+    private Texture2D tex;
+    private Mat matIn, matOut;
+
+    private Mat mapX, mapY;
+    private bool mapReady = false;
+
+    public void Initialize(RawImage tgt, Slider ctrl, WebCamTexture sharedCam)
+    {
+        display = tgt;
+        progressionSlider = ctrl;
+        cam = sharedCam;
+
+        if (!cam.isPlaying) cam.Play();
+
+        int w = cam.width > 16 ? cam.width : 1280;
+        int h = cam.height > 16 ? cam.height : 720;
+
+        tex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+        display.texture = tex;
+        display.color = Color.white;
+
+        matIn = new Mat(h, w, CvType.CV_8UC4);
+        matOut = new Mat(h, w, CvType.CV_8UC4);
+        mapX = new Mat(h, w, CvType.CV_32FC1);
+        mapY = new Mat(h, w, CvType.CV_32FC1);
+
+        PrecomputeDistortionMap(w, h);
+    }
+
+    void Update()
+    {
+        if (!cam.didUpdateThisFrame || !mapReady) return;
+        Utils.webCamTextureToMat(cam, matIn);
+
+        float t = progressionSlider.value;
+        float acuteStrength = t;
+        matIn.copyTo(matOut);
+
+        if (acuteStrength > 0f)
+        {
+            Mat effectMat = new Mat();
+            matIn.copyTo(effectMat);
+
+            Imgproc.remap(effectMat, effectMat, mapX, mapY, Imgproc.INTER_LINEAR, Core.BORDER_REFLECT);
+
+            float scale = Mathf.Lerp(micropsiaMinScale, micropsiaMaxScale, acuteStrength);
+            ApplyCentralMicropsia(effectMat, scale, Mathf.Lerp(3.5f, 2.0f, t));
+
+            int blurRadius = (int)(acuteStrength * 30f);
+            if (blurRadius % 2 == 0) blurRadius += 1;
+            if (blurRadius >= 3)
+                Imgproc.GaussianBlur(effectMat, effectMat, new Size(blurRadius, blurRadius), 0);
+
+            Mat mask = new Mat(matIn.rows(), matIn.cols(), CvType.CV_32FC1, new Scalar(0));
+            Imgproc.circle(mask,
+                new Point(matIn.cols() / 2 + 20, matIn.rows() / 2 - 10),
+                (int)(Mathf.Min(matIn.cols(), matIn.rows()) * 0.4f),
+                new Scalar(1.0), -1);
+            Imgproc.GaussianBlur(mask, mask, new Size(151, 151), 60);
+            Core.multiply(mask, new Scalar(acuteStrength), mask);
+
+            List<Mat> maskChannels = new List<Mat> { mask, mask.clone(), mask.clone(), mask.clone() };
+            Mat mask4 = new Mat();
+            Core.merge(maskChannels, mask4);
+
+            Mat a = new Mat(), b = new Mat(), blended = new Mat();
+            matIn.convertTo(a, CvType.CV_32FC4);
+            effectMat.convertTo(b, CvType.CV_32FC4);
+
+            Core.multiply(a, Scalar.all(1.0) - mask4, a);
+            Core.multiply(b, mask4, b);
+            Core.add(a, b, blended);
+
+            blended.convertTo(matOut, CvType.CV_8UC4);
+
+            effectMat.Dispose(); mask.Dispose(); mask4.Dispose();
+            foreach (var ch in maskChannels) ch.Dispose();
+            a.Dispose(); b.Dispose(); blended.Dispose();
+        }
+
+        Utils.fastMatToTexture2D(matOut, tex);
+        display.texture = tex;
+    }
+
+    void PrecomputeDistortionMap(int w, int h)
+    {
+        int cx = w / 2 + 20;
+        int cy = h / 2 - 10;
+        float radius = Mathf.Min(w, h) / 2f;
+
+        for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+        {
+            float dx = x - cx;
+            float dy = y - cy;
+            float dist = Mathf.Sqrt(dx * dx + dy * dy);
+            float fade = Mathf.Clamp01((radius - dist) / radius);
+
+            float ampX = Mathf.Sin(2 * Mathf.PI * (y - cy) / h * sineFreq) * 6 * distortionStrength;
+            float ampY = Mathf.Cos(2 * Mathf.PI * (x - cx) / w * cosineFreq) * 6 * distortionStrength;
+
+            mapX.put(y, x, x + ampX * fade);
+            mapY.put(y, x, y + ampY * fade);
+        }
+
+        mapReady = true;
+    }
+
+    void ApplyCentralMicropsia(Mat image, float scale, float radiusRatio)
+    {
+        int w = image.width();
+        int h = image.height();
+        int cx = w / 2 + 20;
+        int cy = h / 2 - 10;
+        int radius = (int)(Mathf.Min(w, h) / radiusRatio);
+
+        int x0 = Mathf.Max(cx - radius, 0);
+        int y0 = Mathf.Max(cy - radius, 0);
+        int x1 = Mathf.Min(cx + radius, w);
+        int y1 = Mathf.Min(cy + radius, h);
+
+        Mat roi = new Mat(image, new OpenCVForUnity.CoreModule.Rect(x0, y0, x1 - x0, y1 - y0));
+        Size scaledSize = new Size(roi.width() * scale, roi.height() * scale);
+        Mat scaled = new Mat();
+        Imgproc.resize(roi, scaled, scaledSize);
+
+        int dx = (roi.width() - scaled.width()) / 2;
+        int dy = (roi.height() - scaled.height()) / 2;
+
+        scaled.copyTo(roi.submat(dy, dy + scaled.rows(), dx, dx + scaled.cols()));
+        scaled.Dispose();
+    }
+
+    void OnDisable()
+    {
+        matIn?.Dispose();
+        matOut?.Dispose();
+        mapX?.Dispose();
+        mapY?.Dispose();
+    }
+
+    void OnDestroy()
+    {
+        if (cam != null && cam.isPlaying) cam.Stop();
+    }
+}
