@@ -3,7 +3,7 @@ using UnityEngine.UI;
 
 /// <summary>
 /// Central UI controller – handles panel visibility, webcam management, and
-/// toggles real-time retinal-disease effects.  Includes a Back button to
+/// toggles real-time retinal-disease effects. Includes a Back button to
 /// return to the disease-selection menu.
 /// </summary>
 public class MenuManager : MonoBehaviour
@@ -23,8 +23,10 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private Button macularButton;
     [SerializeField] private Button rpButton;
     [SerializeField] private Button amdButton;
+    [SerializeField] private Button hypertensiveButton; // NEW
+    [SerializeField] private Button acuteCSCRButton; // NEW BUTTON
     [Space]
-    [SerializeField] private Button backButton;          // NEW
+    [SerializeField] private Button backButton;
 
     [Header("Slider")]
     [SerializeField] private Slider severitySlider;
@@ -41,6 +43,8 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private MacularPuckerEffect macularEffect;
     [SerializeField] private RetinitisPigmentosaEffect rpEffect;
     [SerializeField] private AMDEffect amdEffect;
+    [SerializeField] private HypertensiveRetinopathyEffect hypertensiveEffect; // NEW
+    [SerializeField] private AcuteCSCREffect acuteCSCREffect; // NEW EFFECT
 
     /* ---------------- internal state ---------------- */
     private WebCamTexture cam;
@@ -58,7 +62,10 @@ public class MenuManager : MonoBehaviour
         stargardtButton.onClick.AddListener(StartStargardt);
         macularButton.onClick.AddListener(StartMacularPucker);
         rpButton.onClick.AddListener(StartRP);
-        backButton.onClick.AddListener(BackToMenu);           // NEW
+        amdButton.onClick.AddListener(StartAMDEffect);
+        hypertensiveButton.onClick.AddListener(StartHypertensiveRetinopathy); // NEW
+        acuteCSCRButton.onClick.AddListener(StartAcuteCSCR); // NEW
+        backButton.onClick.AddListener(BackToMenu);
 
         /* ---- initial UI ---- */
         diseasesPanel.SetActive(false);
@@ -80,7 +87,6 @@ public class MenuManager : MonoBehaviour
 
     private void BackToMenu()
     {
-        // Stop camera preview for performance (optional)
         if (cam != null && cam.isPlaying) cam.Pause();
 
         webcamDisplay.gameObject.SetActive(false);
@@ -116,6 +122,8 @@ public class MenuManager : MonoBehaviour
         stargardtEffect.enabled = false;
         macularEffect.enabled = false;
         rpEffect.enabled = false;
+        amdEffect.enabled = false;
+        hypertensiveEffect.enabled = false; // NEW
     }
 
     /* ---------------- mode wrappers ---------------- */
@@ -132,7 +140,6 @@ public class MenuManager : MonoBehaviour
         HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
-
         ShowSliderAndInitEffect(corticalEffect.Initialize, corticalEffect);
     }
 
@@ -141,7 +148,6 @@ public class MenuManager : MonoBehaviour
         HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
-
         ShowSliderAndInitEffect(nuclearEffect.Initialize, nuclearEffect);
     }
 
@@ -150,7 +156,6 @@ public class MenuManager : MonoBehaviour
         HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
-
         ShowSliderAndInitEffect(traumaticEffect.Initialize, traumaticEffect);
     }
 
@@ -159,7 +164,6 @@ public class MenuManager : MonoBehaviour
         HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
-
         ShowSliderAndInitEffect(posteriorEffect.Initialize, posteriorEffect);
     }
 
@@ -168,7 +172,6 @@ public class MenuManager : MonoBehaviour
         HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
-
         ShowSliderAndInitEffect(stargardtEffect.Initialize, stargardtEffect);
     }
 
@@ -177,7 +180,6 @@ public class MenuManager : MonoBehaviour
         HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
-
         ShowSliderAndInitEffect(macularEffect.Initialize, macularEffect);
     }
 
@@ -186,7 +188,6 @@ public class MenuManager : MonoBehaviour
         HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
-
         ShowSliderAndInitEffect(rpEffect.Initialize, rpEffect);
     }
 
@@ -195,13 +196,24 @@ public class MenuManager : MonoBehaviour
         HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
-
         ShowSliderAndInitEffect(amdEffect.Initialize, amdEffect);
     }
 
+    public void StartHypertensiveRetinopathy()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(hypertensiveEffect.Initialize, hypertensiveEffect);
+    }
 
-
-
+    public void StartAcuteCSCR()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(acuteCSCREffect.Initialize, acuteCSCREffect);
+    }
 
     /* ------------ helper to show slider & enable effect ------------ */
     private void ShowSliderAndInitEffect(System.Action<RawImage, Slider, WebCamTexture> init,
