@@ -23,8 +23,9 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private Button macularButton;
     [SerializeField] private Button rpButton;
     [SerializeField] private Button amdButton;
-    [SerializeField] private Button hypertensiveButton; // NEW
-    [SerializeField] private Button acuteCSCRButton; // NEW BUTTON
+    [SerializeField] private Button hypertensiveButton; 
+    [SerializeField] private Button acuteCSCRButton; 
+    [SerializeField] private Button choroideremiaButton;
     [Space]
     [SerializeField] private Button backButton;
 
@@ -43,8 +44,10 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private MacularPuckerEffect macularEffect;
     [SerializeField] private RetinitisPigmentosaEffect rpEffect;
     [SerializeField] private AMDEffect amdEffect;
-    [SerializeField] private HypertensiveRetinopathyEffect hypertensiveEffect; // NEW
-    [SerializeField] private AcuteCSCREffect acuteCSCREffect; // NEW EFFECT
+    [SerializeField] private HypertensiveRetinopathyEffect hypertensiveEffect; 
+    [SerializeField] private AcuteCSCREffect acuteCSCREffect; 
+    [SerializeField] private ChoroideremiaEffect choroideremiaEffect; 
+
 
     /* ---------------- internal state ---------------- */
     private WebCamTexture cam;
@@ -63,8 +66,9 @@ public class MenuManager : MonoBehaviour
         macularButton.onClick.AddListener(StartMacularPucker);
         rpButton.onClick.AddListener(StartRP);
         amdButton.onClick.AddListener(StartAMDEffect);
-        hypertensiveButton.onClick.AddListener(StartHypertensiveRetinopathy); // NEW
-        acuteCSCRButton.onClick.AddListener(StartAcuteCSCR); // NEW
+        hypertensiveButton.onClick.AddListener(StartHypertensiveRetinopathy); 
+        acuteCSCRButton.onClick.AddListener(StartAcuteCSCR); 
+        choroideremiaButton.onClick.AddListener(StartChoroideremia);
         backButton.onClick.AddListener(BackToMenu);
 
         /* ---- initial UI ---- */
@@ -214,6 +218,15 @@ public class MenuManager : MonoBehaviour
         EnsureCameraRunning();
         ShowSliderAndInitEffect(acuteCSCREffect.Initialize, acuteCSCREffect);
     }
+
+    public void StartChoroideremia()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(choroideremiaEffect.Initialize, choroideremiaEffect);
+    }
+
 
     /* ------------ helper to show slider & enable effect ------------ */
     private void ShowSliderAndInitEffect(System.Action<RawImage, Slider, WebCamTexture> init,
