@@ -24,8 +24,9 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private Button rpButton;
     [SerializeField] private Button amdButton;
     [SerializeField] private Button hypertensiveButton; 
-    [SerializeField] private Button acuteCSCRButton; 
+    [SerializeField] private Button acuteCSCRButton;
     [SerializeField] private Button choroideremiaButton;
+    [SerializeField] Button pathologicMyopiaButton;
     [Space]
     [SerializeField] private Button backButton;
 
@@ -46,7 +47,8 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private AMDEffect amdEffect;
     [SerializeField] private HypertensiveRetinopathyEffect hypertensiveEffect; 
     [SerializeField] private AcuteCSCREffect acuteCSCREffect; 
-    [SerializeField] private ChoroideremiaEffect choroideremiaEffect; 
+    [SerializeField] private ChoroideremiaEffect choroideremiaEffect;
+    [SerializeField] PathologicMyopiaEffect pathMyopiaEffect;
 
 
     /* ---------------- internal state ---------------- */
@@ -69,6 +71,7 @@ public class MenuManager : MonoBehaviour
         hypertensiveButton.onClick.AddListener(StartHypertensiveRetinopathy); 
         acuteCSCRButton.onClick.AddListener(StartAcuteCSCR); 
         choroideremiaButton.onClick.AddListener(StartChoroideremia);
+        pathologicMyopiaButton.onClick.AddListener(StartPathologicMyopia);
         backButton.onClick.AddListener(BackToMenu);
 
         /* ---- initial UI ---- */
@@ -127,7 +130,10 @@ public class MenuManager : MonoBehaviour
         macularEffect.enabled = false;
         rpEffect.enabled = false;
         amdEffect.enabled = false;
-        hypertensiveEffect.enabled = false; // NEW
+        hypertensiveEffect.enabled = false;
+        acuteCSCREffect.enabled = false;
+        choroideremiaEffect.enabled = false;
+        pathMyopiaEffect.enabled = false;
     }
 
     /* ---------------- mode wrappers ---------------- */
@@ -227,6 +233,13 @@ public class MenuManager : MonoBehaviour
         ShowSliderAndInitEffect(choroideremiaEffect.Initialize, choroideremiaEffect);
     }
 
+    public void StartPathologicMyopia() 
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(pathMyopiaEffect.Initialize, pathMyopiaEffect);
+    }
 
     /* ------------ helper to show slider & enable effect ------------ */
     private void ShowSliderAndInitEffect(System.Action<RawImage, Slider, WebCamTexture> init,
