@@ -1,0 +1,323 @@
+/*
+ * PathologicMyopiaEffect.cs  – restored fleck shape, optimised I/O
+ * ----------------------------------------------------------------
+ * 1. Keeps every public field / inspector knob identical.
+ * 2. Uses OpenCVForUnity for all heavy image ops.
+ * 3. No unsafe blocks, no intrinsics, no extra threads.
+ */
+
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+
+[RequireComponent(typeof(RawImage))]
+public class PathologicMyopiaEffect : MonoBehaviour
+{
+#region Inspector
+    [Header("Slider thresholds")]
+    [Range(0.1f,0.6f)] public float S1 = 0.30f;
+    [Range(0.4f,0.9f)] public float S2 = 0.70f;
+
+    [Header("Blur")]
+    public int maxBlurKernel = 41;
+    public int minBlurKernel = 1;
+
+    [Header("Distortion (wavy lines)")]
+    public float distortionMaxPixels = 10f;
+    public float distortionPeriod    = 150f;
+
+    [Header("Black flecks")]
+    public int        spotCount       = 80;
+    public Vector2Int spotRadiusRange = new(12, 40);
+    [Range(0,1)] public float spotOpacity = 1f;
+    const float fleckGrow = 0.15f;
+
+    [Header("Central scotoma")]
+    public float scotomaMinRadius   = 10f;
+    public float scotomaMaxRadius   = 280f;
+    public float scotomaFadePx      = 60f;
+    public float scotomaNoisePixels = 40f;
+
+    [Header("Contrast fade (during scotoma)")]
+    [Range(0.2f,1f)] public float minContrast = 0.6f;
+#endregion
+
+#region Runtime fields
+    RawImage display; Slider slider; WebCamTexture cam; Texture2D tex;
+    int W, H; bool ready;
+
+    Mat src8, blur8;
+    Mat src32, blur32, mix32, warped32, mix8;
+    Mat fleckMask, scotomaMask, noiseMap, radiusMap, irregular;
+    Mat ones4, tmp4;
+
+    Mat baseMapX, baseMapY, sinX, sinY, mapX, mapY;
+#endregion
+
+#region Fleck data
+    struct Spot { public int cx, cy, rx, ry; public float born; }
+    readonly List<Spot> spots = new();
+    readonly System.Random rng = new();
+#endregion
+
+#region Bootstrap
+    public void Initialize(RawImage tgt, Slider s, WebCamTexture sharedCam)
+    {
+        display = tgt; slider = s; cam = sharedCam;
+        display.color = Color.white;
+        if (!cam.isPlaying) cam.Play();
+        StartCoroutine(AllocWhenCamReady());
+    }
+#endregion
+
+    IEnumerator AllocWhenCamReady() { while (cam.width <= 16) yield return null; Setup(); }
+
+    void Setup()
+    {
+        W = cam.width;  H = cam.height;
+
+        tex = new Texture2D(W, H, TextureFormat.RGBA32, false);
+        display.texture = tex;
+
+        src8  = new Mat(H, W, CvType.CV_8UC4);
+        blur8 = new Mat(H, W, CvType.CV_8UC4);
+
+        src32    = new Mat(H, W, CvType.CV_32FC4);
+        blur32   = new Mat(H, W, CvType.CV_32FC4);
+        mix32    = new Mat(H, W, CvType.CV_32FC4);
+        warped32 = new Mat(H, W, CvType.CV_32FC4);
+        mix8     = new Mat(H, W, CvType.CV_8UC4);
+
+        fleckMask   = new Mat(H, W, CvType.CV_32F);
+        scotomaMask = new Mat(H, W, CvType.CV_32F);
+        noiseMap    = GenNoise(H, W, 111);
+        radiusMap   = GenRadius(H, W);
+        irregular   = new Mat(H, W, CvType.CV_32F);
+
+        ones4 = new Mat(H, W, CvType.CV_32FC4, new Scalar(1,1,1,1));
+        tmp4  = new Mat(H, W, CvType.CV_32FC4);
+
+        baseMapX = new Mat(H, W, CvType.CV_32F);
+        baseMapY = new Mat(H, W, CvType.CV_32F);
+        sinX     = new Mat(H, W, CvType.CV_32F);
+        sinY     = new Mat(H, W, CvType.CV_32F);
+        mapX     = new Mat(H, W, CvType.CV_32F);
+        mapY     = new Mat(H, W, CvType.CV_32F);
+
+        for (int y = 0; y < H; y++)
+        {
+            float sy = Mathf.Sin(2f * Mathf.PI * y / distortionPeriod);
+            for (int x = 0; x < W; x++)
+            {
+                float sx = Mathf.Sin(2f * Mathf.PI * x / distortionPeriod);
+                baseMapX.put(y, x, x);
+                baseMapY.put(y, x, y);
+                sinX.put(y, x, sy);
+                sinY.put(y, x, sx);
+            }
+        }
+
+        CreateSpots();
+
+        Core.setNumThreads(SystemInfo.processorCount); // multi‑core OpenCV
+        ready = true;
+    }
+
+    /* ---------------------------------------------------- Update */
+    void Update()
+    {
+        if (!ready || !cam.didUpdateThisFrame) return;
+
+        Utils.webCamTextureToMat(cam, src8);
+        float p = slider ? slider.value : 0f;
+
+        /* 1. Blur */
+        float tBlur = Mathf.Clamp01(p / S1);
+        int   k     = Mathf.Clamp((int)Mathf.Lerp(minBlurKernel, maxBlurKernel, tBlur), 1, maxBlurKernel);
+        if ((k & 1) == 0) k++;
+        Imgproc.GaussianBlur(src8, blur8, new Size(k, k), 0);
+
+        src8.convertTo(src32,  CvType.CV_32FC4);
+        blur8.convertTo(blur32, CvType.CV_32FC4);
+        Core.addWeighted(src32, 1 - tBlur, blur32, tBlur, 0, mix32);
+
+        /* 2. Distortion */
+        float tDist = Mathf.Clamp01((p - S1) / (1 - S1));
+        if (tDist > 1e-4f)
+        {
+            float amp = distortionMaxPixels * tDist;
+            Core.multiply(sinX, new Scalar(amp), mapX);
+            Core.multiply(sinY, new Scalar(amp), mapY);
+            Core.add(baseMapX, mapX, mapX);
+            Core.add(baseMapY, mapY, mapY);
+
+            Imgproc.remap(mix32, warped32, mapX, mapY,
+                          Imgproc.INTER_LINEAR, Core.BORDER_REPLICATE);
+            warped32.copyTo(mix32);
+        }
+
+        /* 3. Flecks */
+        fleckMask.setTo(Scalar.all(0));
+        if (p > S1) AddFlecksSoft(p);
+
+        if (Core.countNonZero(fleckMask) > 0)
+        {
+            Imgproc.GaussianBlur(fleckMask, fleckMask, new Size(51, 51), 20);
+            using (Mat fm4 = Gray2RGBA(fleckMask))
+            {
+                Core.subtract(ones4, fm4, tmp4);
+                Core.multiply(mix32, tmp4, mix32);
+            }
+        }
+
+        /* 4. Scotoma + contrast fade */
+        scotomaMask.setTo(Scalar.all(1));
+        if (p > S2)
+        {
+            float scp  = Mathf.InverseLerp(S2, 1, p);
+            BuildScotoma(scp);
+            float fade = Mathf.Lerp(1, minContrast, scp);
+            Core.multiply(mix32, new Scalar(fade, fade, fade, 1), mix32);
+        }
+        if (Core.countNonZero(scotomaMask) < W * H)
+        {
+            using (Mat sm4 = Gray2RGBA(scotomaMask))
+                Core.multiply(mix32, sm4, mix32);
+        }
+
+        /* 5. Upload */
+        mix32.convertTo(mix8, CvType.CV_8UC4);
+        SetOpaque(mix8);
+        Utils.fastMatToTexture2D(mix8, tex);
+    }
+
+#region Flecks – restored shape, buffered row writes
+    void AddFlecksSoft(float p)
+    {
+        float n = Mathf.InverseLerp(S1, S2, p);
+
+        foreach (var s in spots)
+        {
+            if (n < s.born) continue;
+
+            float g  = Mathf.Clamp01((n - s.born) / fleckGrow);
+            int   rx = (int)(s.rx * g);
+            int   ry = (int)(s.ry * g);
+            if (rx < 1 || ry < 1) continue;
+
+            int xmin = Mathf.Max(0, s.cx - 2 * rx);
+            int xmax = Mathf.Min(W, s.cx + 2 * rx);
+            int ymin = Mathf.Max(0, s.cy - 2 * ry);
+            int ymax = Mathf.Min(H, s.cy + 2 * ry);
+            int span = xmax - xmin;
+
+            float[] row = new float[span];   // temp buffer per row
+
+            for (int y = ymin; y < ymax; y++)
+            {
+                fleckMask.get(y, xmin, row);
+
+                float dy  = (y - s.cy) / (float)ry;
+                float dy2 = dy * dy;
+
+                for (int x = xmin; x < xmax; x++)
+                {
+                    float dx = (x - s.cx) / (float)rx;
+                    float d  = Mathf.Sqrt(dx * dx + dy2);
+                    if (d >= 2f) continue;
+
+                    float alpha = d < 1f ? 1f : (2f - d);
+                    float v = spotOpacity * g * alpha;
+
+                    int idx = x - xmin;
+                    if (v > row[idx]) row[idx] = v;
+                }
+                fleckMask.put(y, xmin, row);
+            }
+        }
+    }
+
+    void CreateSpots()
+    {
+        spots.Clear();
+        for (int i = 0; i < spotCount; i++)
+            spots.Add(new Spot {
+                cx   = rng.Next(W),
+                cy   = rng.Next(H),
+                rx   = rng.Next(spotRadiusRange.x, spotRadiusRange.y),
+                ry   = rng.Next(spotRadiusRange.x, spotRadiusRange.y),
+                born = (float)rng.NextDouble()
+            });
+    }
+#endregion
+
+#region Scotoma & helpers (unchanged)
+    void BuildScotoma(float t)
+    {
+        float baseR = Mathf.Lerp(scotomaMinRadius, scotomaMaxRadius, Mathf.Sqrt(t));
+        float ext   = scotomaNoisePixels * t;
+        Core.multiply(noiseMap, new Scalar(ext), irregular);
+        Core.add(irregular, new Scalar(baseR), irregular);
+
+        Core.subtract(radiusMap, irregular, scotomaMask);
+        Core.add(scotomaMask, new Scalar(scotomaFadePx * 0.5f), scotomaMask);
+        Core.divide(scotomaMask, new Scalar(scotomaFadePx), scotomaMask);
+        Core.min(scotomaMask, new Scalar(1), scotomaMask);
+        Core.max(scotomaMask, new Scalar(0), scotomaMask);
+
+        int k = Mathf.Max(3, (int)(t * 31)); if ((k & 1) == 0) k++;
+        Imgproc.GaussianBlur(scotomaMask, scotomaMask, new Size(k, k), 0);
+    }
+
+    static Mat Gray2RGBA(Mat g) { Mat c = new(); Imgproc.cvtColor(g, c, Imgproc.COLOR_GRAY2RGBA); return c; }
+
+    static void SetOpaque(Mat rgba)
+    {
+        List<Mat> ch = new(); Core.split(rgba, ch);
+        ch[3].setTo(new Scalar(255)); Core.merge(ch, rgba);
+        foreach (var m in ch) m.Dispose();
+    }
+
+    static Mat GenNoise(int h, int w, int blur)
+    {
+        Mat n = new(h, w, CvType.CV_32F);
+        Core.randn(n, 0, 1);
+        Imgproc.GaussianBlur(n, n, new Size(blur, blur), 0);
+        var mm = Core.minMaxLoc(n);
+        Core.subtract(n, new Scalar(mm.minVal), n);
+        Core.divide(n, new Scalar(mm.maxVal - mm.minVal), n);
+        Core.multiply(n, new Scalar(2), n);
+        Core.subtract(n, new Scalar(1), n);
+        return n;
+    }
+
+    static Mat GenRadius(int h, int w)
+    {
+        Mat r = new(h, w, CvType.CV_32F);
+        float cx = w * 0.5f, cy = h * 0.5f;
+        for (int y = 0; y < h; y++)
+        {
+            float dy2 = (y - cy) * (y - cy);
+            for (int x = 0; x < w; x++)
+                r.put(y, x, Mathf.Sqrt((x - cx) * (x - cx) + dy2));
+        }
+        return r;
+    }
+#endregion
+
+#region Cleanup
+    void OnDisable(){ if(cam && cam.isPlaying) cam.Stop(); }
+
+    void OnDestroy()
+    {
+        foreach (Mat m in new[]{ src8, blur8, src32, blur32, mix32, warped32, mix8,
+                                 fleckMask, scotomaMask, noiseMap, radiusMap, irregular,
+                                 ones4, tmp4, baseMapX, baseMapY, sinX, sinY, mapX, mapY })
+            m?.Dispose();
+    }
+#endregion
+}
