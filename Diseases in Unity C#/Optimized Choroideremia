@@ -1,0 +1,371 @@
+/*
+ * ChoroideremiaEffect.cs  – single‑put spot mask
+ * ------------------------------------------------
+ * Builds the entire lesion / fleck mask in a float[]
+ * then uploads it with a single Mat.put call.
+ */
+
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+using System.Collections;
+using System.Collections.Generic;
+
+[RequireComponent(typeof(RawImage))]
+public class ChoroideremiaEffect : MonoBehaviour
+{
+#region ───── Inspector (unchanged) ─────────────────────────────────────
+    [Header("Tunnel‑vision")]
+    [Range(3,201)]  public int   blurSize = 51;
+    [Range(.05f,.5f)]public float rimWidthFraction = .20f;
+    [Range(0f,1f)]  public float irregularityStrength = .40f;
+
+    [Header("Slider‑based night‑blindness")]
+    [Range(.1f,1f)] public float minBrightnessAtNight = .40f;
+
+    [Header("Scene‑dependent night‑blindness")]
+    public float nightBlindnessThreshold = 60f;
+    [Range(.1f,1f)] public float nightBlindnessFactor = .4f;
+    public float maxBlurAmount = 3f;
+
+    [Header("Full blackout")]
+    [Range(.05f,.5f)] public float fullBlindFraction = .10f;
+
+    [Header("Peripheral lesions (larger patches)")]
+    public int peripheralSpotCount = 60;
+    [Range(0f,1f)] public float S2 = 0.85f;
+    [Range(0f,1f)] public float S3 = 1.0f;
+    public Vector2 spotRadiusRangeX = new(25,60);
+    public Vector2 spotRadiusRangeY = new(35,80);
+    [Range(0f,1f)] public float spotStart = 0.25f;
+    [Range(1f,8f)] public float spotDarknessBoost = 3f;
+
+    [Header("Black flecks (tiny dots)")]
+    public int fleckCount = 80;
+    public Vector2 fleckRadiusRange = new(12,40);
+    [Range(0f,1f)] public float fleckOpacity = 1f;
+    [Range(.05f,.5f)] public float fleckCentralRadius = 0.30f;
+    const float fleckGrow = 0.15f;
+#endregion
+
+#region ───── Runtime refs & Mats ───────────────────────────────────────
+    RawImage display; Slider uiSlider; WebCamTexture cam; Texture2D tex;
+
+    Mat src8, matFloat, matProcessed;
+    Mat tunnelMask, noiseMap, radiusMap, tmpFloat;
+    Mat mask4, onesAlpha;
+    Mat spotMask32, tmp4;
+
+    float maxRadius, rimWidthPx, lastSlider = -1f;
+    bool ready = false;
+
+    /* full‑image buffer for spot mask (reused) */
+    float[] spotBuf;
+#endregion
+
+#region ───── Spot data ────────────────────────────────────────────────
+    class Spot { public Vector2 c; public float rx, ry; public float a; public float born; }
+    List<Spot> spots;
+    readonly System.Random rng = new();
+#endregion
+
+#region ───── Public bootstrap ─────────────────────────────────────────
+    public void Initialize(RawImage target, Slider slider, WebCamTexture sharedCam)
+    {
+        display = target; uiSlider = slider;
+        cam     = sharedCam ?? new WebCamTexture(1280,720);
+        if (!cam.isPlaying) cam.Play();
+        StartCoroutine(SetupWhenReady());
+    }
+#endregion
+
+    IEnumerator SetupWhenReady()
+    {
+        while (cam.width <= 16) yield return null;
+        int w = cam.width, h = cam.height;
+
+        tex = new Texture2D(w,h,TextureFormat.RGBA32,false);
+        display.texture = tex;
+
+        src8         = new Mat(h,w,CvType.CV_8UC4);
+        matFloat     = new Mat(h,w,CvType.CV_32FC4);
+        matProcessed = new Mat(h,w,CvType.CV_8UC4);
+
+        tunnelMask = new Mat(h,w,CvType.CV_32F);
+        noiseMap   = GenNoise(h,w);
+        radiusMap  = GenRadius(h,w);
+        tmpFloat   = new Mat(h,w,CvType.CV_32F);
+
+        onesAlpha = Mat.ones(h,w,CvType.CV_32F);
+        mask4     = new Mat(h,w,CvType.CV_32FC4);
+
+        spotMask32 = new Mat(h,w,CvType.CV_32F);
+        tmp4       = new Mat(h,w,CvType.CV_32FC4);
+
+        CreateSpots(h,w);
+        spotBuf = new float[w*h];
+
+        maxRadius  = Mathf.Sqrt((w*0.5f)*(w*0.5f)+(h*0.5f)*(h*0.5f));
+        rimWidthPx = Mathf.Max(w,h)*rimWidthFraction;
+
+        Core.setNumThreads(SystemInfo.processorCount);
+        ready = true;
+    }
+
+#region ───── Unity Update ─────────────────────────────────────────────
+    void Update()
+    {
+        if (!ready || !cam.didUpdateThisFrame) return;
+
+        Utils.webCamTextureToMat(cam, src8);
+        float t = uiSlider ? uiSlider.value : 0f;
+
+        if (!Mathf.Approximately(t, lastSlider))
+        {
+            BuildTunnelMask(t);
+            lastSlider = t;
+        }
+
+        ApplyCombinedEffects(t);
+        Utils.fastMatToTexture2D(matProcessed, tex);
+    }
+#endregion
+
+#region ───── Tunnel mask (unchanged) ─────────────────────────────────-
+    void BuildTunnelMask(float t)
+    {
+        if (t < 1e-4f) { tunnelMask.setTo(new Scalar(1)); return; }
+
+        Core.multiply(noiseMap,new Scalar(irregularityStrength*rimWidthPx),tmpFloat);
+        Core.add(radiusMap,tmpFloat,tmpFloat);
+
+        float clearR = Mathf.Lerp(maxRadius,0f,t);
+        float rimEnd = clearR + rimWidthPx;
+
+        Core.subtract(tmpFloat,new Scalar(rimEnd),tunnelMask);
+        Core.multiply(tunnelMask,new Scalar(-1),tunnelMask);
+        Core.divide(tunnelMask,new Scalar(rimWidthPx),tunnelMask);
+        Core.min(tunnelMask,new Scalar(1),tunnelMask);
+        Core.max(tunnelMask,new Scalar(0),tunnelMask);
+
+        float startFade = 1f - fullBlindFraction;
+        if (t > startFade)
+        {
+            float k = (t - startFade) / fullBlindFraction;
+            Core.multiply(tunnelMask,new Scalar(1f-k),tunnelMask);
+        }
+        Imgproc.GaussianBlur(tunnelMask,tunnelMask,new Size(blurSize,blurSize),0);
+    }
+#endregion
+
+#region ───── Main pipeline (unchanged) ────────────────────────────────
+    void ApplyCombinedEffects(float t)
+    {
+        /* 1️⃣ raw → float + slider night‑blindness */
+        src8.convertTo(matFloat,CvType.CV_32FC4);
+        float sliderBrightness = Mathf.Lerp(1f,minBrightnessAtNight,t);
+        Core.multiply(matFloat,new Scalar(sliderBrightness,sliderBrightness,sliderBrightness,1),matFloat);
+
+        /* 2️⃣ scene‑dependent dim/blur */
+        float avg = GetAverageBrightness(src8);
+        if (avg < nightBlindnessThreshold)
+        {
+            float darkRatio = Mathf.Pow(Mathf.InverseLerp(nightBlindnessThreshold,0f,avg),1.5f);
+            float nightMult = Mathf.Lerp(nightBlindnessFactor,1f,darkRatio);
+            Core.multiply(matFloat,new Scalar(nightMult,nightMult,nightMult,1),matFloat);
+
+            float blurRatio = Mathf.Pow(darkRatio,1.5f) * Mathf.Pow(t,1.5f);
+            float blurInt   = Mathf.Lerp(0f,maxBlurAmount,blurRatio);
+            if (blurInt > .01f)
+            {
+                int k = Mathf.Clamp((int)(blurSize*blurInt)|1,3,51);
+                Imgproc.GaussianBlur(matFloat,matFloat,new Size(k,k),0);
+            }
+        }
+
+        /* 3️⃣ tunnel mask */
+        List<Mat> tv = new() { tunnelMask,tunnelMask,tunnelMask,onesAlpha };
+        Core.merge(tv,mask4);
+        Core.multiply(matFloat,mask4,matFloat);
+
+        /* 4️⃣ lesions + flecks */
+        if (t >= spotStart)
+        {
+            BuildSpotMaskSinglePut(t);                          // <‑‑ faster
+            Mat inv = new(); Core.subtract(onesAlpha,spotMask32,inv);
+
+            List<Mat> sc = new(){ inv,inv,inv,onesAlpha };
+            Mat spot4 = new(); Core.merge(sc,spot4);
+            Core.multiply(matFloat,spot4,matFloat);
+
+            inv.Dispose(); spot4.Dispose();
+        }
+
+        /* 5️⃣ back to 8‑bit */
+        matFloat.convertTo(matProcessed,CvType.CV_8UC4);
+    }
+#endregion
+
+#region ───── Optimised spot & fleck builder ───────────────────────────
+    void BuildSpotMaskSinglePut(float tSlider)
+    {
+        float n = Mathf.Clamp01((tSlider - spotStart)/(1f-spotStart));
+        System.Array.Clear(spotBuf,0,spotBuf.Length);
+
+        int h = spotMask32.rows(), w = spotMask32.cols();
+
+        foreach (var s in spots)
+        {
+            bool isPeripheral = (s.born == 0f && s.a > 0f);
+
+            if (isPeripheral)
+            {
+                float rpX = Mathf.Max(1f, s.rx * n);
+                float rpY = Mathf.Max(1f, s.ry * n);
+                float a   = Mathf.Min(s.a * n * spotDarknessBoost, 1f);
+
+                int x0 = Mathf.Max(0,(int)(s.c.x - 2*rpX));
+                int x1 = Mathf.Min(w,(int)(s.c.x + 2*rpX));
+                int y0 = Mathf.Max(0,(int)(s.c.y - 2*rpY));
+                int y1 = Mathf.Min(h,(int)(s.c.y + 2*rpY));
+
+                for (int y=y0; y<y1; y++)
+                {
+                    float dy = (y - s.c.y) / rpY;
+                    float dy2= dy*dy;
+                    int rowIdx = y*w;
+
+                    for (int x=x0; x<x1; x++)
+                    {
+                        float dx = (x - s.c.x) / rpX;
+                        float d  = Mathf.Sqrt(dx*dx + dy2);
+                        float v  = (d < 1f) ? 1f :
+                                   (d < 2f) ? a*(1f-(d-1f)) : 0f;
+                        if (v > spotBuf[rowIdx + x]) spotBuf[rowIdx + x] = v;
+                    }
+                }
+                continue;
+            }
+
+            /* tiny flecks */
+            if (n < s.born) continue;
+            float g = Mathf.Clamp01((n - s.born)/fleckGrow);
+
+            int rfX = (int)(s.rx * g);
+            int rfY = (int)(s.ry * g);
+            if (rfX < 1 || rfY < 1) continue;
+
+            int x0f = Mathf.Max(0,(int)(s.c.x - 2*rfX));
+            int x1f = Mathf.Min(w,(int)(s.c.x + 2*rfX));
+            int y0f = Mathf.Max(0,(int)(s.c.y - 2*rfY));
+            int y1f = Mathf.Min(h,(int)(s.c.y + 2*rfY));
+
+            for (int y=y0f; y<y1f; y++)
+            {
+                float dy = (y - s.c.y) / (float)rfY;
+                float dy2= dy*dy;
+                int rowIdx = y*w;
+
+                for (int x=x0f; x<x1f; x++)
+                {
+                    float dx = (x - s.c.x) / (float)rfX;
+                    float d  = Mathf.Sqrt(dx*dx + dy2);
+                    float v  = (d < 1f) ? fleckOpacity*g :
+                               (d < 2f) ? fleckOpacity*g*(2f-d) : 0f;
+                    if (v > spotBuf[rowIdx + x]) spotBuf[rowIdx + x] = v;
+                }
+            }
+        }
+
+        /* single JNI call */
+        spotMask32.put(0,0,spotBuf);
+        Imgproc.GaussianBlur(spotMask32,spotMask32,new Size(51,51),20);
+    }
+#endregion
+
+#region ───── Spot init (unchanged) ─────────────────────────────────────
+    void CreateSpots(int h,int w)
+    {
+        spots = new();
+
+        /* central flecks */
+        float cx=w*.5f, cy=h*.5f, maxR=Mathf.Min(w,h)*fleckCentralRadius;
+        for(int i=0;i<fleckCount;i++)
+        {
+            Vector2 pos;
+            do { pos = new Vector2(rng.Next(w),rng.Next(h)); }
+            while ((pos-new Vector2(cx,cy)).sqrMagnitude>maxR*maxR);
+
+            spots.Add(new Spot{
+                c=pos,
+                rx=Random.Range(fleckRadiusRange.x,fleckRadiusRange.y),
+                ry=Random.Range(fleckRadiusRange.x,fleckRadiusRange.y),
+                born=(float)rng.NextDouble(),
+                a=0f});
+        }
+
+        /* peripheral lesions */
+        for(int i=0;i<peripheralSpotCount;i++)
+        {
+            float act=(i<50)?Mathf.Lerp(S2,S3-.1f,i/50f):
+                               Mathf.Lerp(S3-.1f,S3,(i-50)/10f);
+            Spot p=RandomSpot(false,act,w,h); p.born=0f; spots.Add(p);
+        }
+    }
+
+    Spot RandomSpot(bool isCentral,float act,int w,int h)
+    {
+        int cx=isCentral?Random.Range(w/4,3*w/4):Random.Range(0,w);
+        int cy=isCentral?Random.Range(h/4,3*h/4):Random.Range(0,h);
+        float rx=Random.Range(spotRadiusRangeX.x,spotRadiusRangeX.y);
+        float ry=Random.Range(spotRadiusRangeY.x,spotRadiusRangeY.y);
+        return new Spot{ c=new Vector2(cx,cy),rx=rx,ry=ry,a=act,born=0f };
+    }
+#endregion
+
+#region ───── Helpers (unchanged) ───────────────────────────────────────
+    float GetAverageBrightness(Mat m)
+    {
+        using Mat g=new(); Imgproc.cvtColor(m,g,Imgproc.COLOR_RGBA2GRAY);
+        return (float)Core.mean(g).val[0];
+    }
+
+    static Mat GenRadius(int h,int w)
+    {
+        Mat r=new(h,w,CvType.CV_32F);
+        float cx=w*.5f, cy=h*.5f;
+        for(int y=0;y<h;y++){
+            float dy2=(y-cy)*(y-cy);
+            for(int x=0;x<w;x++)
+                r.put(y,x,Mathf.Sqrt((x-cx)*(x-cx)+dy2));
+        }
+        return r;
+    }
+
+    Mat GenNoise(int h,int w)
+    {
+        Mat n=new(h,w,CvType.CV_32F);
+        Core.randn(n,0,1);
+        Imgproc.GaussianBlur(n,n,new Size(blurSize,blurSize),0);
+        var mm=Core.minMaxLoc(n);
+        Core.subtract(n,new Scalar(mm.minVal),n);
+        Core.divide(n,new Scalar(mm.maxVal-mm.minVal),n);
+        Core.multiply(n,new Scalar(2),n);
+        Core.subtract(n,new Scalar(1),n);
+        return n;
+    }
+#endregion
+
+#region ───── Cleanup ───────────────────────────────────────────────────
+    void OnDestroy()
+    {
+        cam?.Stop();
+        foreach (var m in new[]{src8,matFloat,matProcessed,
+                                tunnelMask,noiseMap,radiusMap,tmpFloat,
+                                mask4,onesAlpha,spotMask32,tmp4})
+            m?.Dispose();
+    }
+#endregion
+}
