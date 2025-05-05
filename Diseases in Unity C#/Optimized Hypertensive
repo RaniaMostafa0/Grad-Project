@@ -1,0 +1,230 @@
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+using System.Collections.Generic;
+using System.Collections;
+using System.Threading.Tasks;           // <‑‑ for Parallel.For
+
+[RequireComponent(typeof(RawImage))]
+public class HypertensiveRetinopathyEffect : MonoBehaviour
+{
+#region Inspector
+    [Header("Blur & Contrast")]
+    [SerializeField] int   maxBlurKernelSize = 21;
+    [SerializeField] float minContrast       = 0.5f;
+
+    [Header("Black Spots")]
+    [SerializeField] int   numSpots     = 25;
+    [SerializeField] float minDistance  = 100f;
+    [SerializeField] Vector2 spotRadiusRangeX = new(30,70);
+    [SerializeField] Vector2 spotRadiusRangeY = new(40,90);
+    [SerializeField] Vector2 transparencyRange= new(.85f,.95f);
+#endregion
+
+#region Runtime mats & fields
+    class Spot { public Vector2 c; public float rx, ry, a; }
+
+    RawImage display; Slider slider; WebCamTexture cam; Texture2D tex;
+
+    Mat src8, rgb, lab, processed;
+    Mat mask32, ones, tmp4;
+    List<Spot> spots;
+
+    float[] maskBuf;                            // full image buffer
+    const  int noiseBlurSize = 51;
+    bool ready = false;
+#endregion
+
+#region Bootstrap
+    public void Initialize(RawImage tgt, Slider s, WebCamTexture sharedCam)
+    {
+        display = tgt; slider = s; cam = sharedCam;
+        if (!cam.isPlaying) cam.Play();
+        StartCoroutine(WaitCamInit());
+    }
+
+    IEnumerator WaitCamInit()
+    {
+        while (cam.width <= 16) yield return null;
+        int w = cam.width, h = cam.height;
+
+        tex = new Texture2D(w,h,TextureFormat.RGBA32,false);
+        display.texture = tex;
+
+        src8      = new Mat(h,w,CvType.CV_8UC4);
+        rgb       = new Mat(h,w,CvType.CV_8UC3);
+        lab       = new Mat(h,w,CvType.CV_8UC3);
+        processed = new Mat(h,w,CvType.CV_8UC4);
+
+        mask32 = new Mat(h,w,CvType.CV_32F);
+        ones   = Mat.ones(h,w,CvType.CV_32F);
+        tmp4   = new Mat(h,w,CvType.CV_32FC4);
+
+        maskBuf = new float[w*h];
+        GenerateSpots(h,w);
+
+        Core.setNumThreads(SystemInfo.processorCount);
+        ready=true;
+    }
+#endregion
+
+#region Spot generation (unchanged)
+    void GenerateSpots(int h,int w)
+    {
+        spots = new();
+        for(int i=0;i<numSpots;i++)
+        {
+            for(int attempt=0; attempt<100; attempt++)
+            {
+                Vector2 c=new(Random.Range(0,w),Random.Range(0,h));
+                bool ok=true;
+                foreach(var s in spots)
+                    if(Vector2.Distance(s.c,c)<minDistance){ok=false;break;}
+                if(!ok)continue;
+
+                spots.Add(new Spot{
+                    c=c,
+                    rx=Random.Range(spotRadiusRangeX.x,spotRadiusRangeX.y),
+                    ry=Random.Range(spotRadiusRangeY.x,spotRadiusRangeY.y),
+                    a=Random.Range(transparencyRange.x,transparencyRange.y)});
+                break;
+            }
+        }
+    }
+#endregion
+
+#region Update / pipeline
+    void Update()
+    {
+        if(!ready||!cam.didUpdateThisFrame||slider==null)return;
+
+        Utils.webCamTextureToMat(cam,src8);
+        ProcessFrame(slider.value);
+        Utils.fastMatToTexture2D(processed,tex);
+    }
+
+    void ProcessFrame(float p)
+    {
+        /* 1️⃣ colour → Lab & contrast */
+        Imgproc.cvtColor(src8,rgb,Imgproc.COLOR_RGBA2RGB);
+        Imgproc.cvtColor(rgb,lab,Imgproc.COLOR_RGB2Lab);
+        List<Mat> ch=new(); Core.split(lab,ch);
+
+        float factor=(p<.5f)? 1f-p/.5f*(1f-minContrast):minContrast;
+        Core.addWeighted(ch[0],factor,
+                         new Mat(ch[0].size(),ch[0].type(),new Scalar(128)),
+                         1f-factor,0,ch[0]);
+        Core.merge(ch,lab);
+        Imgproc.cvtColor(lab,rgb,Imgproc.COLOR_Lab2RGB);
+        Imgproc.cvtColor(rgb,processed,Imgproc.COLOR_RGB2RGBA);
+
+        /* 2️⃣ progressive blur */
+        int k = (p<.5f)? 1
+              : (p<.75f)? NextOdd(1+(int)((p-.5f)/.25f*4))
+              : NextOdd(5+(int)((p-.75f)/.25f*16));
+        if(k>1) Imgproc.GaussianBlur(processed,processed,new Size(k,k),0);
+
+        /* 3️⃣ spots */
+        if(p>=.6f)
+        {
+            BuildSpotMaskParallel(p);
+
+            processed.convertTo(tmp4,CvType.CV_32FC4);
+            Core.multiply(tmp4,new Scalar(.9,.9,.9,0),tmp4);
+
+            List<Mat> mc=new(){ mask32,mask32,mask32,mask32 };
+            Mat mask4=new(); Core.merge(mc,mask4);
+
+            Core.multiply(tmp4,mask4,tmp4);
+            Mat orig32=new(); processed.convertTo(orig32,CvType.CV_32FC4);
+            Core.subtract(orig32,tmp4,tmp4);
+            tmp4.convertTo(processed,CvType.CV_8UC4);
+
+            mask4.Dispose(); orig32.Dispose();
+        }
+    }
+#endregion
+
+#region Parallel spot mask builder
+    void BuildSpotMaskParallel(float p)
+    {
+        float t = Mathf.Clamp01((p-.6f)/.4f);
+        System.Array.Clear(maskBuf,0,maskBuf.Length);
+
+        int h = mask32.rows(), w = mask32.cols();
+
+        /* pre‑compute per‑spot parameters once */
+        int spotN = spots.Count;
+        float[] cx=new float[spotN], cy=new float[spotN],
+                rx=new float[spotN], ry=new float[spotN], al=new float[spotN],
+                x0=new float[spotN], x1=new float[spotN],
+                y0=new float[spotN], y1=new float[spotN];
+
+        for(int i=0;i<spotN;i++)
+        {
+            var s=spots[i];
+            rx[i]=Mathf.Max(1f,s.rx*t);
+            ry[i]=Mathf.Max(1f,s.ry*t);
+            al[i]=s.a*t;
+            cx[i]=s.c.x; cy[i]=s.c.y;
+            x0[i]=Mathf.Max(0,cx[i]-2*rx[i]);
+            x1[i]=Mathf.Min(w,cx[i]+2*rx[i]);
+            y0[i]=Mathf.Max(0,cy[i]-2*ry[i]);
+            y1[i]=Mathf.Min(h,cy[i]+2*ry[i]);
+        }
+
+        /* parallel over rows – no contention */
+        Parallel.For(0,h,y=>{
+            int row=y*w;
+            for(int s=0;s<spotN;s++)
+            {
+                if(y<y0[s]||y>=y1[s])continue;
+
+                float dy=(y - cy[s])/ry[s];
+                float dy2=dy*dy;
+
+                int xx0=(int)x0[s], xx1=(int)x1[s];
+                for(int x=xx0;x<xx1;x++)
+                {
+                    float dx=(x - cx[s])/rx[s];
+                    float d = Mathf.Sqrt(dx*dx + dy2);
+                    float v = (d<1f)? al[s] :
+                              (d<2f)? al[s]*(1f-(d-1f)) : 0f;
+                    int idx = row+x;
+                    if(v>maskBuf[idx]) maskBuf[idx]=v;
+                }
+            }
+        });
+
+        mask32.put(0,0,maskBuf);
+        int k=NextOdd((int)(101+t*50));
+        Imgproc.GaussianBlur(mask32,mask32,new Size(k,k),20+t*30);
+    }
+#endregion
+
+#region Helpers & cleanup
+    static int NextOdd(int n)=>(n&1)==1? n:n+1;
+
+    Mat GenNoise(int h,int w)
+    {
+        Mat n=new(h,w,CvType.CV_32F);
+        Core.randn(n,0,1);
+        Imgproc.GaussianBlur(n,n,new Size(noiseBlurSize,noiseBlurSize),0);
+        var mm=Core.minMaxLoc(n);
+        Core.subtract(n,new Scalar(mm.minVal),n);
+        Core.divide(n,new Scalar(mm.maxVal-mm.minVal),n);
+        Core.multiply(n,new Scalar(2),n);
+        Core.subtract(n,new Scalar(1),n);
+        return n;
+    }
+
+    void OnDestroy()
+    {
+        cam?.Stop();
+        foreach(Mat m in new[]{src8,rgb,lab,processed,mask32,tmp4,ones})
+            m?.Dispose();
+    }
+#endregion
+}
