@@ -1,14 +1,9 @@
 using UnityEngine;
 using UnityEngine.UI;
+using System.Collections;
 
-/// <summary>
-/// Central UI controller – handles panel visibility, webcam management, and
-/// toggles real-time retinal-disease effects. Includes a Back button to
-/// return to the disease-selection menu.
-/// </summary>
 public class MenuManager : MonoBehaviour
 {
-    /* ---------------- Inspector hooks ---------------- */
     [Header("Panels")]
     [SerializeField] private GameObject diseasesPanel;
 
@@ -23,10 +18,10 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private Button macularButton;
     [SerializeField] private Button rpButton;
     [SerializeField] private Button amdButton;
-    [SerializeField] private Button hypertensiveButton; 
+    [SerializeField] private Button hypertensiveButton;
     [SerializeField] private Button acuteCSCRButton;
     [SerializeField] private Button choroideremiaButton;
-    [SerializeField] Button pathologicMyopiaButton;
+    [SerializeField] private Button pathologicMyopiaButton;
     [Space]
     [SerializeField] private Button backButton;
 
@@ -45,36 +40,31 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private MacularPuckerEffect macularEffect;
     [SerializeField] private RetinitisPigmentosaEffect rpEffect;
     [SerializeField] private AMDEffect amdEffect;
-    [SerializeField] private HypertensiveRetinopathyEffect hypertensiveEffect; 
-    [SerializeField] private AcuteCSCREffect acuteCSCREffect; 
+    [SerializeField] private HypertensiveRetinopathyEffect hypertensiveEffect;
+    [SerializeField] private AcuteCSCREffect acuteCSCREffect;
     [SerializeField] private ChoroideremiaEffect choroideremiaEffect;
-    [SerializeField] PathologicMyopiaEffect pathMyopiaEffect;
+    [SerializeField] private PathologicMyopiaEffect pathMyopiaEffect;
 
-
-    /* ---------------- internal state ---------------- */
     private WebCamTexture cam;
 
-    #region Unity lifecycle
     private void Awake()
     {
-        /* ---- wire buttons ---- */
         startButton.onClick.AddListener(ShowDiseases);
         regularVisionButton.onClick.AddListener(StartRegularVision);
-        corticalButton.onClick.AddListener(StartCorticalCataract);
-        nuclearButton.onClick.AddListener(StartNuclearCataract);
-        traumaticButton.onClick.AddListener(StartTraumaticCataract);
-        posteriorButton.onClick.AddListener(StartPosteriorCataract);
-        stargardtButton.onClick.AddListener(StartStargardt);
-        macularButton.onClick.AddListener(StartMacularPucker);
-        rpButton.onClick.AddListener(StartRP);
-        amdButton.onClick.AddListener(StartAMDEffect);
-        hypertensiveButton.onClick.AddListener(StartHypertensiveRetinopathy); 
-        acuteCSCRButton.onClick.AddListener(StartAcuteCSCR); 
-        choroideremiaButton.onClick.AddListener(StartChoroideremia);
-        pathologicMyopiaButton.onClick.AddListener(StartPathologicMyopia);
+        corticalButton.onClick.AddListener(() => StartEffect(corticalEffect.Initialize, corticalEffect));
+        nuclearButton.onClick.AddListener(() => StartEffect(nuclearEffect.Initialize, nuclearEffect));
+        traumaticButton.onClick.AddListener(() => StartEffect(traumaticEffect.Initialize, traumaticEffect));
+        posteriorButton.onClick.AddListener(() => StartEffect(posteriorEffect.Initialize, posteriorEffect));
+        stargardtButton.onClick.AddListener(() => StartEffect(stargardtEffect.Initialize, stargardtEffect));
+        macularButton.onClick.AddListener(() => StartEffect(macularEffect.Initialize, macularEffect));
+        rpButton.onClick.AddListener(() => StartEffect(rpEffect.Initialize, rpEffect));
+        amdButton.onClick.AddListener(() => StartEffect(amdEffect.Initialize, amdEffect));
+        hypertensiveButton.onClick.AddListener(() => StartEffect(hypertensiveEffect.Initialize, hypertensiveEffect));
+        acuteCSCRButton.onClick.AddListener(() => StartEffect(acuteCSCREffect.Initialize, acuteCSCREffect));
+        choroideremiaButton.onClick.AddListener(() => StartEffect(choroideremiaEffect.Initialize, choroideremiaEffect));
+        pathologicMyopiaButton.onClick.AddListener(() => StartEffect(pathMyopiaEffect.Initialize, pathMyopiaEffect));
         backButton.onClick.AddListener(BackToMenu);
 
-        /* ---- initial UI ---- */
         diseasesPanel.SetActive(false);
         severitySlider.gameObject.SetActive(false);
         webcamDisplay.gameObject.SetActive(false);
@@ -82,9 +72,7 @@ public class MenuManager : MonoBehaviour
 
         DisableAllEffects();
     }
-    #endregion
 
-    /* ---------------- navigation helpers ---------------- */
     public void ShowDiseases()
     {
         diseasesPanel.SetActive(true);
@@ -98,20 +86,11 @@ public class MenuManager : MonoBehaviour
 
         webcamDisplay.gameObject.SetActive(false);
         severitySlider.gameObject.SetActive(false);
+        severitySlider.value = 0f;
         DisableAllEffects();
 
         diseasesPanel.SetActive(true);
         backButton.gameObject.SetActive(false);
-    }
-
-    private void EnsureCameraRunning()
-    {
-        if (cam == null)
-            cam = new WebCamTexture(1280, 720);
-
-        if (!cam.isPlaying) cam.Play();
-        webcamDisplay.texture = cam;
-        webcamDisplay.gameObject.SetActive(true);
     }
 
     private void HidePanelsForSimulation()
@@ -136,119 +115,60 @@ public class MenuManager : MonoBehaviour
         pathMyopiaEffect.enabled = false;
     }
 
-    /* ---------------- mode wrappers ---------------- */
     public void StartRegularVision()
     {
         HidePanelsForSimulation();
         DisableAllEffects();
         severitySlider.gameObject.SetActive(false);
-        EnsureCameraRunning();
+        StartCoroutine(EnsureCameraOnly());
     }
 
-    public void StartCorticalCataract()
+    private IEnumerator EnsureCameraOnly()
+    {
+        if (cam == null)
+            cam = new WebCamTexture(1280, 720);
+
+        if (!cam.isPlaying)
+            cam.Play();
+
+        webcamDisplay.texture = cam;
+        webcamDisplay.gameObject.SetActive(true);
+
+        while (cam.width <= 16 || cam.height <= 16 || !cam.didUpdateThisFrame)
+            yield return null;
+
+        webcamDisplay.texture = cam;
+    }
+
+    private void StartEffect(System.Action<RawImage, Slider, WebCamTexture> init, Behaviour effectComponent)
     {
         HidePanelsForSimulation();
         DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(corticalEffect.Initialize, corticalEffect);
+        StartCoroutine(EnsureCameraAndStartEffectCoroutine(init, effectComponent));
     }
 
-    public void StartNuclearCataract()
+    private IEnumerator EnsureCameraAndStartEffectCoroutine(System.Action<RawImage, Slider, WebCamTexture> init, Behaviour effectComponent)
     {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(nuclearEffect.Initialize, nuclearEffect);
-    }
+        if (cam == null)
+            cam = new WebCamTexture(1280, 720);
 
-    public void StartTraumaticCataract()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(traumaticEffect.Initialize, traumaticEffect);
-    }
+        if (!cam.isPlaying)
+            cam.Play();
 
-    public void StartPosteriorCataract()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(posteriorEffect.Initialize, posteriorEffect);
-    }
+        webcamDisplay.texture = cam;
+        webcamDisplay.gameObject.SetActive(true);
 
-    public void StartStargardt()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(stargardtEffect.Initialize, stargardtEffect);
-    }
+        while (cam.width <= 16 || cam.height <= 16 || !cam.didUpdateThisFrame)
+            yield return null;
 
-    public void StartMacularPucker()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(macularEffect.Initialize, macularEffect);
-    }
-
-    public void StartRP()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(rpEffect.Initialize, rpEffect);
-    }
-
-    public void StartAMDEffect()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(amdEffect.Initialize, amdEffect);
-    }
-
-    public void StartHypertensiveRetinopathy()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(hypertensiveEffect.Initialize, hypertensiveEffect);
-    }
-
-    public void StartAcuteCSCR()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(acuteCSCREffect.Initialize, acuteCSCREffect);
-    }
-
-    public void StartChoroideremia()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(choroideremiaEffect.Initialize, choroideremiaEffect);
-    }
-
-    public void StartPathologicMyopia() 
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(pathMyopiaEffect.Initialize, pathMyopiaEffect);
-    }
-
-    /* ------------ helper to show slider & enable effect ------------ */
-    private void ShowSliderAndInitEffect(System.Action<RawImage, Slider, WebCamTexture> init,
-                                         Behaviour effectComponent)
-    {
         severitySlider.value = 0f;
         severitySlider.gameObject.SetActive(true);
 
         init.Invoke(webcamDisplay, severitySlider, cam);
         effectComponent.enabled = true;
+
+        // ✅ Force mask regeneration
+        if (effectComponent is StargardtEffect se) se.ForceRefresh();
+        else if (effectComponent is RetinitisPigmentosaEffect rp) rp.ForceRefresh();
     }
 }
