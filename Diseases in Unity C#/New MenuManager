@@ -18,6 +18,11 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private Button macularButton;
     [SerializeField] private Button rpButton;
     [SerializeField] private Button amdButton;
+    [SerializeField] private Button hypertensiveButton;
+    [SerializeField] private Button acuteCSCRButton;
+    [SerializeField] private Button choroideremiaButton;
+    [SerializeField] private Button pathologicMyopiaButton;
+    [Space]
     [SerializeField] private Button backButton;
 
     [Header("Slider")]
@@ -39,6 +44,10 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private MacularPuckerEffect macularEffect;
     [SerializeField] private RetinitisPigmentosaEffect rpEffect;
     [SerializeField] private AMDEffect amdEffect;
+    [SerializeField] private HypertensiveRetinopathyEffect hypertensiveEffect;
+    [SerializeField] private AcuteCSCREffect acuteCSCREffect;
+    [SerializeField] private ChoroideremiaEffect choroideremiaEffect;
+    [SerializeField] private PathologicMyopiaEffect pathMyopiaEffect;
 
     private WebCamTexture cam;
 
@@ -54,6 +63,11 @@ public class MenuManager : MonoBehaviour
         stargardtButton.onClick.AddListener(StartStargardt);
         macularButton.onClick.AddListener(StartMacularPucker);
         rpButton.onClick.AddListener(StartRP);
+        amdButton.onClick.AddListener(StartAMDEffect);
+        hypertensiveButton.onClick.AddListener(StartHypertensiveRetinopathy);
+        acuteCSCRButton.onClick.AddListener(StartAcuteCSCR);
+        choroideremiaButton.onClick.AddListener(StartChoroideremia);
+        pathologicMyopiaButton.onClick.AddListener(StartPathologicMyopia);
         backButton.onClick.AddListener(BackToMenu);
 
         diseasesPanel.SetActive(false);
@@ -87,7 +101,7 @@ public class MenuManager : MonoBehaviour
     private void EnsureCameraRunning()
     {
         if (cam == null)
-            cam = new WebCamTexture(1280, 720); // You can also try 1920x1080
+            cam = new WebCamTexture(1280, 720);
 
         if (!cam.isPlaying)
             cam.Play();
@@ -100,7 +114,7 @@ public class MenuManager : MonoBehaviour
 
     private IEnumerator FitRawImageAfterDelay()
     {
-        yield return new WaitForSeconds(0.2f); // Allow webcam to initialize
+        yield return new WaitForSeconds(0.2f);
         FitRawImageAbsolute(webcamDisplay, rawImageWidth, rawImageHeight);
     }
 
@@ -127,6 +141,10 @@ public class MenuManager : MonoBehaviour
         macularEffect.enabled = false;
         rpEffect.enabled = false;
         amdEffect.enabled = false;
+        hypertensiveEffect.enabled = false;
+        acuteCSCREffect.enabled = false;
+        choroideremiaEffect.enabled = false;
+        pathMyopiaEffect.enabled = false;
     }
 
     public void StartRegularVision()
@@ -201,6 +219,38 @@ public class MenuManager : MonoBehaviour
         ShowSliderAndInitEffect(amdEffect.Initialize, amdEffect);
     }
 
+    public void StartHypertensiveRetinopathy()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(hypertensiveEffect.Initialize, hypertensiveEffect);
+    }
+
+    public void StartAcuteCSCR()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(acuteCSCREffect.Initialize, acuteCSCREffect);
+    }
+
+    public void StartChoroideremia()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(choroideremiaEffect.Initialize, choroideremiaEffect);
+    }
+
+    public void StartPathologicMyopia()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(pathMyopiaEffect.Initialize, pathMyopiaEffect);
+    }
+
     private void ShowSliderAndInitEffect(System.Action<RawImage, Slider, WebCamTexture> init,
                                          Behaviour effectComponent)
     {
@@ -208,5 +258,11 @@ public class MenuManager : MonoBehaviour
         severitySlider.gameObject.SetActive(true);
         init.Invoke(webcamDisplay, severitySlider, cam);
         effectComponent.enabled = true;
+
+        // Force mask regeneration for Stargardt and RP effects
+        if (effectComponent is StargardtEffect se)
+            se.ForceRefresh();
+        else if (effectComponent is RetinitisPigmentosaEffect rp)
+            rp.ForceRefresh();
     }
 }
