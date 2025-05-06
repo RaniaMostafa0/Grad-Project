@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 using System.Collections;
 
 public class MenuManager : MonoBehaviour
@@ -24,6 +25,10 @@ public class MenuManager : MonoBehaviour
     [SerializeField] private Button pathologicMyopiaButton;
     [Space]
     [SerializeField] private Button backButton;
+
+    [Header("UI Elements")]
+    [SerializeField] private GameObject titleText;      // Main title text GameObject
+    [SerializeField] private GameObject secondPageText; // Text to show on second page
 
     [Header("Slider")]
     [SerializeField] private Slider severitySlider;
@@ -70,10 +75,16 @@ public class MenuManager : MonoBehaviour
         pathologicMyopiaButton.onClick.AddListener(StartPathologicMyopia);
         backButton.onClick.AddListener(BackToMenu);
 
+        // Initial UI states
         diseasesPanel.SetActive(false);
         severitySlider.gameObject.SetActive(false);
         webcamDisplay.gameObject.SetActive(false);
         backButton.gameObject.SetActive(false);
+
+        if (titleText != null)
+            titleText.SetActive(true);
+        if (secondPageText != null)
+            secondPageText.SetActive(false);
 
         DisableAllEffects();
     }
@@ -83,6 +94,17 @@ public class MenuManager : MonoBehaviour
         diseasesPanel.SetActive(true);
         startButton.gameObject.SetActive(false);
         backButton.gameObject.SetActive(false);
+        // Hide main title, show second-page text
+        if (titleText != null)
+            titleText.SetActive(false);
+        if (secondPageText != null)
+            secondPageText.SetActive(true);
+        secondPageText.SetActive(true);
+
+        // 2) then tell it to start the typewriter
+        var typer = secondPageText.GetComponent<TypewriterEffect>();
+        if (typer != null)
+            typer.Play();
     }
 
     private void BackToMenu()
@@ -96,6 +118,10 @@ public class MenuManager : MonoBehaviour
 
         diseasesPanel.SetActive(true);
         backButton.gameObject.SetActive(false);
+
+        // Restore second page text when returning
+        if (secondPageText != null)
+            secondPageText.SetActive(true);
     }
 
     private void EnsureCameraRunning()
@@ -129,6 +155,9 @@ public class MenuManager : MonoBehaviour
     {
         diseasesPanel.SetActive(false);
         backButton.gameObject.SetActive(true);
+        // Hide second page text when entering simulation
+        if (secondPageText != null)
+            secondPageText.SetActive(false);
     }
 
     private void DisableAllEffects()
