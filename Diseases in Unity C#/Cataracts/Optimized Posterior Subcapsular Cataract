@@ -1,0 +1,181 @@
+/*
+ * PosteriorCataractEffect.cs  –  single‑worker, CPU‑optimised,
+ *                               main‑thread‑safe SystemInfo access.
+ */
+
+using UnityEngine;
+using UnityEngine.UI;
+using OpenCVForUnity.CoreModule;
+using OpenCVForUnity.ImgprocModule;
+using OpenCVForUnity.UnityUtils;
+using System.Collections;
+using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Tasks;
+
+[RequireComponent(typeof(RawImage))]
+public class PosteriorCataractEffect : MonoBehaviour
+{
+#region ----- Inspector knobs -------------------------------------------------
+    [Header("Glare parameters")]
+    [SerializeField] int maxBlurRadius = 50;   // halo spread at t = 1
+    [SerializeField] int power         = 2;    // fall‑off exponent
+    [SerializeField] int brightThresh  = 220;  // threshold for hotspots
+#endregion
+
+#region ----- Main‑thread refs -------------------------------------------------
+    RawImage      uiRaw;
+    Slider        uiSlider;
+    WebCamTexture cam;
+    Texture2D     tex;
+
+    int W, H;
+#endregion
+
+#region ----- Worker infra ----------------------------------------------------
+    sealed class FrameIn  { public Mat src8;  public float t; }
+    sealed class FrameOut { public Mat out8; }
+
+    readonly ConcurrentQueue<FrameIn>  qIn  = new();
+    readonly ConcurrentQueue<FrameOut> qOut = new();
+    CancellationTokenSource cts;
+    Task worker;
+#endregion
+
+#region ----- Public bootstrap ------------------------------------------------
+    public void Initialize(RawImage target, Slider slider, WebCamTexture sharedCam)
+    {
+        uiRaw    = target;
+        uiSlider = slider;
+        cam      = sharedCam;
+        if (!cam.isPlaying) cam.Play();
+
+        StartCoroutine(SetupWhenCamReady());
+    }
+#endregion
+
+    IEnumerator SetupWhenCamReady()
+    {
+        while (cam.width <= 16) yield return null;
+        W = cam.width;  H = cam.height;
+
+        tex = new Texture2D(W, H, TextureFormat.RGBA32, false);
+        uiRaw.texture = tex;
+        uiRaw.color   = Color.white;
+
+        /* ----- safe main‑thread call ----- */
+        int coreCount = SystemInfo.processorCount;
+        Core.setNumThreads(coreCount);           // set once, globally
+
+        /* start worker */
+        cts    = new CancellationTokenSource();
+        worker = Task.Run(() => ProcessLoop(coreCount), cts.Token);
+    }
+
+#region ----- Unity Update ----------------------------------------------------
+    const int MAX_QUEUE = 3;
+
+    void Update()
+    {
+        /* dequeue finished frame */
+        if (qOut.TryDequeue(out var done))
+        {
+            Utils.fastMatToTexture2D(done.out8, tex);
+            done.out8.Dispose();
+        }
+
+        /* enqueue new frame */
+        if (cam.didUpdateThisFrame && qIn.Count < MAX_QUEUE)
+        {
+            Mat snap = new Mat(H, W, CvType.CV_8UC4);
+            Utils.webCamTextureToMat(cam, snap);
+            float t = uiSlider ? uiSlider.value : 0f;
+            qIn.Enqueue(new FrameIn { src8 = snap, t = t });
+        }
+    }
+#endregion
+
+#region ----- Worker thread ---------------------------------------------------
+    void ProcessLoop(int coreCount)
+    {
+        // worker‑owned Mats
+        Mat g  = new(H, W, CvType.CV_8UC1);
+        Mat m8 = new(H, W, CvType.CV_8UC1);
+        Mat mF = new(H, W, CvType.CV_32FC1);
+        Mat halo8 = new(H, W, CvType.CV_8UC3);
+        Mat bgr   = new(H, W, CvType.CV_8UC3);
+        Mat outR8 = new(H, W, CvType.CV_8UC4);
+
+        int qW = W/4, qH = H/4;
+        Mat qm8 = new(qH, qW, CvType.CV_8UC1);
+        Mat qmF = new(qH, qW, CvType.CV_32FC1);
+
+        while (!cts.IsCancellationRequested)
+        {
+            if (!qIn.TryDequeue(out var job))
+            {
+                Thread.Sleep(1);
+                continue;
+            }
+
+            Mat src = job.src8;
+            float t  = job.t;
+
+            if (t < 1e-3f)
+            {
+                qOut.Enqueue(new FrameOut { out8 = src });
+                continue;
+            }
+
+            /* 1️⃣ threshold bright */
+            Imgproc.cvtColor(src, g, Imgproc.COLOR_RGBA2GRAY);
+            Imgproc.threshold(g, m8, brightThresh, 255, Imgproc.THRESH_BINARY);
+
+            /* 2️⃣ sigma blur */
+            double sigma = t * maxBlurRadius;
+            if (sigma > 15)
+            {
+                Imgproc.resize(m8, qm8, qm8.size(), 0,0, Imgproc.INTER_AREA);
+                Imgproc.GaussianBlur(qm8, qmF, new Size(0,0), sigma*0.25, sigma*0.25);
+                qmF.convertTo(qmF, CvType.CV_32FC1, 1.0/255);
+                Core.pow(qmF, power, qmF);
+                Imgproc.resize(qmF, mF, mF.size());
+            }
+            else
+            {
+                Imgproc.GaussianBlur(m8, mF, new Size(0,0), sigma, sigma);
+                mF.convertTo(mF, CvType.CV_32FC1, 1.0/255);
+                Core.pow(mF, power, mF);
+            }
+
+            /* 3️⃣ halo = mask replicated to RGB */
+            Imgproc.cvtColor(mF, halo8, Imgproc.COLOR_GRAY2BGR);
+            halo8.convertTo(halo8, CvType.CV_8UC3, 255);
+
+            /* 4️⃣ blend */
+            Imgproc.cvtColor(src, bgr, Imgproc.COLOR_RGBA2BGR);
+            Core.addWeighted(bgr, 1.0, halo8, 0.7*t, 0, bgr);
+
+            /* 5️⃣ back to RGBA */
+            Imgproc.cvtColor(bgr, outR8, Imgproc.COLOR_BGR2RGBA);
+
+            qOut.Enqueue(new FrameOut { out8 = outR8.clone() });
+            src.Dispose();
+        }
+
+        foreach (var m in new[]{ g,m8,mF,halo8,bgr,outR8,qm8,qmF }) m.Dispose();
+    }
+#endregion
+
+#region ----- Cleanup ---------------------------------------------------------
+    void OnDisable()
+    {
+        if (cts != null)
+        {
+            cts.Cancel();
+            worker?.Wait();
+        }
+        cam?.Stop();
+    }
+#endregion
+}
