@@ -57,13 +57,17 @@ public class MenuManager : MonoBehaviour
     [Header("Analog Hint")]
     [SerializeField] private GameObject analogHintPanel;
 
+    [Header("Trigger Hint")]
+    [SerializeField] private GameObject triggerHintPanel;
+
     private WebCamTexture cam;
     private bool sliderUsedInSession = false;
     private bool sliderUsedInCurrentSimulation = false;
+    private bool triggerHintUsed = false;
+    private bool hasEnteredSimulation = false;
 
     private void Awake()
     {
-        // Wire buttons
         startButton.onClick.AddListener(ShowDiseases);
         regularVisionButton.onClick.AddListener(StartRegularVision);
         corticalButton.onClick.AddListener(StartCorticalCataract);
@@ -80,22 +84,23 @@ public class MenuManager : MonoBehaviour
         pathologicMyopiaButton.onClick.AddListener(StartPathologicMyopia);
         backButton.onClick.AddListener(BackToMenu);
 
-        // Initial UI states
         diseasesPanel.SetActive(false);
         severitySlider.gameObject.SetActive(false);
         webcamDisplay.gameObject.SetActive(false);
         backButton.gameObject.SetActive(false);
 
-        if (titleText != null)
-            titleText.SetActive(true);
-        if (secondPageText != null)
-            secondPageText.SetActive(false);
-        if (analogHintPanel != null)
-            analogHintPanel.SetActive(false);
+        if (titleText != null) titleText.SetActive(true);
+        if (secondPageText != null) secondPageText.SetActive(false);
+        if (analogHintPanel != null) analogHintPanel.SetActive(false);
+
+        if (triggerHintPanel != null && !triggerHintUsed)
+        {
+            triggerHintPanel.SetActive(true);
+            var hint = triggerHintPanel.GetComponent<TriggerHint>();
+            if (hint != null) hint.enabled = true;
+        }
 
         DisableAllEffects();
-
-        // Detect slider movement
         severitySlider.onValueChanged.AddListener(delegate { OnSliderMoved(); });
     }
 
@@ -105,14 +110,20 @@ public class MenuManager : MonoBehaviour
         startButton.gameObject.SetActive(false);
         backButton.gameObject.SetActive(false);
 
-        if (titleText != null)
-            titleText.SetActive(false);
-        if (secondPageText != null)
-            secondPageText.SetActive(true);
+        if (titleText != null) titleText.SetActive(false);
+        if (secondPageText != null) secondPageText.SetActive(true);
 
         var typer = secondPageText.GetComponent<TypewriterEffect>();
-        if (typer != null)
-            typer.Play();
+        if (typer != null) typer.Play();
+
+        if (triggerHintPanel != null && triggerHintPanel.activeSelf)
+        {
+            var hint = triggerHintPanel.GetComponent<TriggerHint>();
+            if (hint != null) hint.HideNow();
+            triggerHintPanel.SetActive(false);  // Immediately hide after Start
+        }
+
+        triggerHintUsed = true;
     }
 
     private void BackToMenu()
@@ -127,15 +138,20 @@ public class MenuManager : MonoBehaviour
         diseasesPanel.SetActive(true);
         backButton.gameObject.SetActive(false);
 
-        if (secondPageText != null)
-            secondPageText.SetActive(true);
+        if (secondPageText != null) secondPageText.SetActive(true);
 
-        // Hide analog hint if visible
         if (analogHintPanel != null && analogHintPanel.activeSelf)
         {
             var hint = analogHintPanel.GetComponent<AnalogHint>();
-            if (hint != null)
-                hint.HideNow();
+            if (hint != null) hint.HideNow();
+            analogHintPanel.SetActive(false);
+        }
+
+        if (triggerHintPanel != null && triggerHintPanel.activeSelf)
+        {
+            var hint = triggerHintPanel.GetComponent<TriggerHint>();
+            if (hint != null) hint.HideNow();
+            triggerHintPanel.SetActive(false);
         }
     }
 
@@ -149,8 +165,8 @@ public class MenuManager : MonoBehaviour
         if (analogHintPanel != null)
         {
             var hint = analogHintPanel.GetComponent<AnalogHint>();
-            if (hint != null)
-                hint.HideNow();
+            if (hint != null) hint.HideNow();
+            analogHintPanel.SetActive(false);
         }
     }
 
@@ -159,15 +175,11 @@ public class MenuManager : MonoBehaviour
         if (cam == null)
         {
             WebCamDevice[] devices = WebCamTexture.devices;
-            for (int i = 0; i < devices.Length; i++)
-                Debug.Log($"Camera {i}: {devices[i].name}");
-
             string preferredDeviceName = devices.Length > 1 ? devices[1].name : devices[0].name;
             cam = new WebCamTexture(preferredDeviceName, 1280, 720);
         }
 
-        if (!cam.isPlaying)
-            cam.Play();
+        if (!cam.isPlaying) cam.Play();
 
         webcamDisplay.texture = cam;
         webcamDisplay.gameObject.SetActive(true);
@@ -192,8 +204,17 @@ public class MenuManager : MonoBehaviour
     {
         diseasesPanel.SetActive(false);
         backButton.gameObject.SetActive(true);
-        if (secondPageText != null)
-            secondPageText.SetActive(false);
+        if (secondPageText != null) secondPageText.SetActive(false);
+
+        if (triggerHintPanel != null && triggerHintPanel.activeSelf)
+        {
+            var hint = triggerHintPanel.GetComponent<TriggerHint>();
+            if (hint != null) hint.HideNow();
+            triggerHintPanel.SetActive(false);
+        }
+
+        triggerHintUsed = true;
+        hasEnteredSimulation = true;
     }
 
     private void DisableAllEffects()
@@ -220,122 +241,51 @@ public class MenuManager : MonoBehaviour
         EnsureCameraRunning();
     }
 
-    public void StartCorticalCataract()
+    public void StartCorticalCataract() => StartEffect(corticalEffect);
+    public void StartNuclearCataract() => StartEffect(nuclearEffect);
+    public void StartTraumaticCataract() => StartEffect(traumaticEffect);
+    public void StartPosteriorCataract() => StartEffect(posteriorEffect);
+    public void StartStargardt() => StartEffect(stargardtEffect);
+    public void StartMacularPucker() => StartEffect(macularEffect);
+    public void StartRP() => StartEffect(rpEffect);
+    public void StartAMDEffect() => StartEffect(amdEffect);
+    public void StartHypertensiveRetinopathy() => StartEffect(hypertensiveEffect);
+    public void StartAcuteCSCR() => StartEffect(acuteCSCREffect);
+    public void StartChoroideremia() => StartEffect(choroideremiaEffect);
+    public void StartPathologicMyopia() => StartEffect(pathMyopiaEffect);
+
+    private void StartEffect(Behaviour effectComponent)
     {
         HidePanelsForSimulation();
         DisableAllEffects();
         EnsureCameraRunning();
-        ShowSliderAndInitEffect(corticalEffect.Initialize, corticalEffect);
+        ShowSliderAndInitEffect(effectComponent);
     }
 
-    public void StartNuclearCataract()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(nuclearEffect.Initialize, nuclearEffect);
-    }
-
-    public void StartTraumaticCataract()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(traumaticEffect.Initialize, traumaticEffect);
-    }
-
-    public void StartPosteriorCataract()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(posteriorEffect.Initialize, posteriorEffect);
-    }
-
-    public void StartStargardt()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(stargardtEffect.Initialize, stargardtEffect);
-    }
-
-    public void StartMacularPucker()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(macularEffect.Initialize, macularEffect);
-    }
-
-    public void StartRP()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(rpEffect.Initialize, rpEffect);
-    }
-
-    public void StartAMDEffect()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(amdEffect.Initialize, amdEffect);
-    }
-
-    public void StartHypertensiveRetinopathy()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(hypertensiveEffect.Initialize, hypertensiveEffect);
-    }
-
-    public void StartAcuteCSCR()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(acuteCSCREffect.Initialize, acuteCSCREffect);
-    }
-
-    public void StartChoroideremia()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(choroideremiaEffect.Initialize, choroideremiaEffect);
-    }
-
-    public void StartPathologicMyopia()
-    {
-        HidePanelsForSimulation();
-        DisableAllEffects();
-        EnsureCameraRunning();
-        ShowSliderAndInitEffect(pathMyopiaEffect.Initialize, pathMyopiaEffect);
-    }
-
-    private void ShowSliderAndInitEffect(System.Action<RawImage, Slider, WebCamTexture> init, Behaviour effectComponent)
+    private void ShowSliderAndInitEffect(Behaviour effectComponent)
     {
         severitySlider.value = 0f;
         severitySlider.gameObject.SetActive(true);
-        init.Invoke(webcamDisplay, severitySlider, cam);
+
+        if (effectComponent is IEffectInitializer initializer)
+            initializer.Initialize(webcamDisplay, severitySlider, cam);
+
         effectComponent.enabled = true;
 
-        if (effectComponent is StargardtEffect se)
-            se.ForceRefresh();
-        else if (effectComponent is RetinitisPigmentosaEffect rp)
-            rp.ForceRefresh();
+        if (effectComponent is StargardtEffect se) se.ForceRefresh();
+        else if (effectComponent is RetinitisPigmentosaEffect rp) rp.ForceRefresh();
 
         sliderUsedInCurrentSimulation = false;
 
         if (!sliderUsedInSession && analogHintPanel != null)
         {
             analogHintPanel.SetActive(true);
-            var hint = analogHintPanel.GetComponent<AnalogHint>();
-            if (hint != null)
-                hint.Restart();
+            analogHintPanel.GetComponent<AnalogHint>()?.Restart();
         }
     }
+}
+
+public interface IEffectInitializer
+{
+    void Initialize(RawImage display, Slider slider, WebCamTexture cam);
 }
