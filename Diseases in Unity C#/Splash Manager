@@ -1,0 +1,53 @@
+using UnityEngine;
+using UnityEngine.UI;
+using System.Collections;
+
+public class SplashManager : MonoBehaviour
+{
+    public CanvasGroup splashGroup;
+    public GameObject logoImage;
+    public GameObject mainMenuUI;
+
+    public float fadeInTime = 1.5f;
+    public float logoDisplayTime = 2f;
+    public float fadeOutTime = 1.5f;
+
+    private AudioSource audioSource;
+
+    private void Start()
+    {
+        mainMenuUI.SetActive(false);
+        audioSource = GetComponent<AudioSource>(); // get audio component
+        StartCoroutine(PlaySplashSequence());
+    }
+
+    IEnumerator PlaySplashSequence()
+    {
+        splashGroup.alpha = 0f;
+        splashGroup.gameObject.SetActive(true);
+        logoImage.SetActive(true);
+
+        // ✅ Play intro sound when splash starts
+        if (audioSource != null && audioSource.clip != null)
+            audioSource.Play();
+
+        // Fade in
+        while (splashGroup.alpha < 1f)
+        {
+            splashGroup.alpha += Time.deltaTime / fadeInTime;
+            yield return null;
+        }
+
+        yield return new WaitForSeconds(logoDisplayTime);
+
+        // Fade out
+        while (splashGroup.alpha > 0f)
+        {
+            splashGroup.alpha -= Time.deltaTime / fadeOutTime;
+            yield return null;
+        }
+
+        splashGroup.gameObject.SetActive(false);
+        mainMenuUI.SetActive(true);
+    }
+}
