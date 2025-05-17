@@ -1,0 +1,35 @@
+using UnityEngine;
+using TMPro;
+using System.Collections;
+
+public class TypewriterEffect : MonoBehaviour
+{
+    [SerializeField] private TextMeshProUGUI tmp;
+    [SerializeField] private float charsPerSecond = 30f;
+
+    private string fullText;
+
+    private void Awake()
+    {
+        fullText = tmp.text;
+        tmp.maxVisibleCharacters = 0;
+    }
+
+    public void Play()
+    {
+        StopAllCoroutines();
+        StartCoroutine(Reveal());
+    }
+
+    private IEnumerator Reveal()
+    {
+        int total = fullText.Length;
+        float interval = 1f / charsPerSecond;
+
+        for (int i = 1; i <= total; i++)
+        {
+            tmp.maxVisibleCharacters = i;
+            yield return new WaitForSeconds(interval);
+        }
+    }
+}
