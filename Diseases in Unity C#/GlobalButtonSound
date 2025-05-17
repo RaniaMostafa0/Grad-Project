@@ -1,0 +1,41 @@
+using UnityEngine;
+using UnityEngine.UI;
+
+public class GlobalButtonSound : MonoBehaviour
+{
+    public static AudioClip sharedClip;
+    public static AudioSource sharedSource;
+
+    public AudioClip clickSound;
+    public bool isInitializer = false;
+
+    void Awake()
+    {
+        // First button sets the shared sound and audio source
+        if (isInitializer)
+        {
+            sharedClip = clickSound;
+
+            // ✅ Better: create AudioSource on the canvas or persistent object
+            GameObject audioHost = GameObject.Find("MainCanvas");
+            if (audioHost == null)
+                audioHost = new GameObject("UIAudioSourceHost");
+
+            if (sharedSource == null)
+                sharedSource = audioHost.AddComponent<AudioSource>();
+
+            sharedSource.playOnAwake = false;
+            sharedSource.spatialBlend = 0f;
+            sharedSource.volume = 1f;
+        }
+
+        // Add click listener
+        GetComponent<Button>().onClick.AddListener(PlaySound);
+    }
+
+    void PlaySound()
+    {
+        if (sharedSource != null && sharedClip != null)
+            sharedSource.PlayOneShot(sharedClip);
+    }
+}
