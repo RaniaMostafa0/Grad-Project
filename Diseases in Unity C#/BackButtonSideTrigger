@@ -1,0 +1,42 @@
+/*  BackButtonSideTrigger.cs  — updated  */
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.XR;
+
+public class BackButtonSideTrigger : MonoBehaviour
+{
+    [SerializeField] Button backButton;          // same as before
+    [SerializeField] XRNode hand = XRNode.RightHand;
+    [Tooltip("Press-threshold when using the analog grip axis")]
+    [SerializeField] float gripThreshold = 0.7f; // only used if your device lacks gripButton
+
+    InputDevice device; bool wasPressed;
+
+    void OnEnable() => device = InputDevices.GetDeviceAtXRNode(hand);
+
+    void Update()
+    {
+        if (!backButton || !backButton.gameObject.activeInHierarchy) return;
+        if (!device.isValid) device = InputDevices.GetDeviceAtXRNode(hand);
+
+        /* ---- read the SIDE (grip) trigger ---- */
+        bool pressed = false;
+
+        /* Most XR controllers report a digital gripButton… */
+        if (device.TryGetFeatureValue(CommonUsages.gripButton, out pressed))
+        {
+            // nothing else to do – pressed is already true/false
+        }
+        /* …but some only give an analog “grip” value (0-1). */
+        else if (device.TryGetFeatureValue(CommonUsages.grip, out float grip))
+        {
+            pressed = grip > gripThreshold;
+        }
+
+        /* rising edge → invoke the existing Back button */
+        if (pressed && !wasPressed)
+            backButton.onClick.Invoke();
+
+        wasPressed = pressed;
+    }
+}
