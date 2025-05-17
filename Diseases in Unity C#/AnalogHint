@@ -1,0 +1,66 @@
+using UnityEngine;
+using System.Collections;
+
+public class AnalogHint : MonoBehaviour
+{
+    public RectTransform analogImage;
+    public CanvasGroup canvasGroup;
+    public float moveAmount = 10f;
+    public float moveSpeed = 2f;
+    public float fadeSpeed = 1f;
+
+    private bool fadingIn = true;
+    private bool shouldHide = false;
+    private Coroutine fadeCoroutine;
+
+    void OnEnable()
+    {
+        Restart();
+    }
+
+    public void Restart()
+    {
+        fadingIn = true;
+        shouldHide = false;
+        canvasGroup.alpha = 0f;
+
+        if (fadeCoroutine != null)
+            StopCoroutine(fadeCoroutine);
+        fadeCoroutine = StartCoroutine(FadeLoop());
+    }
+
+    void Update()
+    {
+        float x = Mathf.Sin(Time.time * moveSpeed) * moveAmount;
+        analogImage.anchoredPosition = new Vector2(x, analogImage.anchoredPosition.y);
+
+        if (shouldHide && canvasGroup.alpha > 0f)
+        {
+            canvasGroup.alpha = Mathf.MoveTowards(canvasGroup.alpha, 0f, fadeSpeed * Time.deltaTime);
+            if (canvasGroup.alpha <= 0.01f)
+                gameObject.SetActive(false);
+        }
+    }
+
+    IEnumerator FadeLoop()
+    {
+        while (!shouldHide)
+        {
+            float targetAlpha = fadingIn ? 1f : 0.2f;
+
+            while (!Mathf.Approximately(canvasGroup.alpha, targetAlpha) && !shouldHide)
+            {
+                canvasGroup.alpha = Mathf.MoveTowards(canvasGroup.alpha, targetAlpha, fadeSpeed * Time.deltaTime);
+                yield return null;
+            }
+
+            fadingIn = !fadingIn;
+            yield return new WaitForSeconds(0.5f);
+        }
+    }
+
+    public void HideNow()
+    {
+        shouldHide = true;
+    }
+}
