@@ -1,0 +1,60 @@
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+using System.Collections;
+
+public class TriggerHint : MonoBehaviour
+{
+    public RectTransform image;
+    public CanvasGroup canvasGroup;
+    public float moveAmount = 10f;
+    public float moveSpeed = 2f;
+    public float fadeSpeed = 1f;
+
+    private bool fadingIn = true;
+    private bool shouldHide = false;
+    private Coroutine fadeCoroutine;
+
+    void OnEnable()
+    {
+        shouldHide = false;
+        canvasGroup.alpha = 0f;
+        if (fadeCoroutine != null)
+            StopCoroutine(fadeCoroutine);
+        fadeCoroutine = StartCoroutine(FadeLoop());
+    }
+
+    void Update()
+    {
+        // Pulse movement
+        float y = Mathf.Sin(Time.time * moveSpeed) * moveAmount;
+        image.anchoredPosition = new Vector2(image.anchoredPosition.x, y);
+
+        if (shouldHide && canvasGroup.alpha > 0f)
+        {
+            canvasGroup.alpha = Mathf.MoveTowards(canvasGroup.alpha, 0f, fadeSpeed * Time.deltaTime);
+            if (canvasGroup.alpha <= 0.01f)
+                gameObject.SetActive(false);
+        }
+    }
+
+    IEnumerator FadeLoop()
+    {
+        while (!shouldHide)
+        {
+            float targetAlpha = fadingIn ? 1f : 0.2f;
+            while (!Mathf.Approximately(canvasGroup.alpha, targetAlpha) && !shouldHide)
+            {
+                canvasGroup.alpha = Mathf.MoveTowards(canvasGroup.alpha, targetAlpha, fadeSpeed * Time.deltaTime);
+                yield return null;
+            }
+            fadingIn = !fadingIn;
+            yield return new WaitForSeconds(0.5f);
+        }
+    }
+
+    public void HideNow()
+    {
+        shouldHide = true;
+    }
+}
