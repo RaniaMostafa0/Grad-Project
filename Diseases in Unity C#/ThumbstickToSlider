@@ -1,0 +1,27 @@
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.XR;
+using UnityEngine.XR.Interaction.Toolkit;   // only for the enum below
+
+public class ThumbstickToSlider : MonoBehaviour
+{
+    public Slider slider;                       // drag-drop in Inspector
+    public XRNode hand = XRNode.RightHand;      // which controller to read
+    public float speed = 0.6f;                  // units per second at full tilt
+
+    InputDevice device;
+
+    void OnEnable() { device = InputDevices.GetDeviceAtXRNode(hand); }
+    void OnDisable() { device = default; }
+
+    void Update()
+    {
+        if (!device.isValid) { device = InputDevices.GetDeviceAtXRNode(hand); return; }
+
+        if (device.TryGetFeatureValue(CommonUsages.primary2DAxis, out Vector2 axis))
+        {
+            float delta = axis.x * speed * Time.deltaTime;        // left / right
+            slider.value = Mathf.Clamp01(slider.value + delta);   // 0-1 normalised
+        }
+    }
+}
