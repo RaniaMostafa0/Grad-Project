@@ -1,0 +1,341 @@
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+using System.Collections;
+
+public class MenuManager : MonoBehaviour
+{
+    [Header("Panels")]
+    [SerializeField] private GameObject diseasesPanel;
+
+    [Header("Buttons")]
+    [SerializeField] private Button startButton;
+    [SerializeField] private Button regularVisionButton;
+    [SerializeField] private Button corticalButton;
+    [SerializeField] private Button nuclearButton;
+    [SerializeField] private Button traumaticButton;
+    [SerializeField] private Button posteriorButton;
+    [SerializeField] private Button stargardtButton;
+    [SerializeField] private Button macularButton;
+    [SerializeField] private Button rpButton;
+    [SerializeField] private Button amdButton;
+    [SerializeField] private Button hypertensiveButton;
+    [SerializeField] private Button acuteCSCRButton;
+    [SerializeField] private Button choroideremiaButton;
+    [SerializeField] private Button pathologicMyopiaButton;
+    [Space]
+    [SerializeField] private Button backButton;
+
+    [Header("UI Elements")]
+    [SerializeField] private GameObject titleText;
+    [SerializeField] private GameObject secondPageText;
+
+    [Header("Slider")]
+    [SerializeField] private Slider severitySlider;
+
+    [Header("Display")]
+    [SerializeField] private RawImage webcamDisplay;
+
+    [Header("Manual Size Settings")]
+    [SerializeField] private float rawImageWidth = 1200f;
+    [SerializeField] private float rawImageHeight = 1080f;
+
+    [Header("Effects")]
+    [SerializeField] private CorticalCataractEffect corticalEffect;
+    [SerializeField] private NuclearCataractEffect nuclearEffect;
+    [SerializeField] private TraumaticCataractEffect traumaticEffect;
+    [SerializeField] private PosteriorCataractEffect posteriorEffect;
+    [SerializeField] private StargardtEffect stargardtEffect;
+    [SerializeField] private MacularPuckerEffect macularEffect;
+    [SerializeField] private RetinitisPigmentosaEffect rpEffect;
+    [SerializeField] private AMDEffect amdEffect;
+    [SerializeField] private HypertensiveRetinopathyEffect hypertensiveEffect;
+    [SerializeField] private AcuteCSCREffect acuteCSCREffect;
+    [SerializeField] private ChoroideremiaEffect choroideremiaEffect;
+    [SerializeField] private PathologicMyopiaEffect pathMyopiaEffect;
+
+    [Header("Analog Hint")]
+    [SerializeField] private GameObject analogHintPanel;
+
+    private WebCamTexture cam;
+    private bool sliderUsedInSession = false;
+    private bool sliderUsedInCurrentSimulation = false;
+
+    private void Awake()
+    {
+        // Wire buttons
+        startButton.onClick.AddListener(ShowDiseases);
+        regularVisionButton.onClick.AddListener(StartRegularVision);
+        corticalButton.onClick.AddListener(StartCorticalCataract);
+        nuclearButton.onClick.AddListener(StartNuclearCataract);
+        traumaticButton.onClick.AddListener(StartTraumaticCataract);
+        posteriorButton.onClick.AddListener(StartPosteriorCataract);
+        stargardtButton.onClick.AddListener(StartStargardt);
+        macularButton.onClick.AddListener(StartMacularPucker);
+        rpButton.onClick.AddListener(StartRP);
+        amdButton.onClick.AddListener(StartAMDEffect);
+        hypertensiveButton.onClick.AddListener(StartHypertensiveRetinopathy);
+        acuteCSCRButton.onClick.AddListener(StartAcuteCSCR);
+        choroideremiaButton.onClick.AddListener(StartChoroideremia);
+        pathologicMyopiaButton.onClick.AddListener(StartPathologicMyopia);
+        backButton.onClick.AddListener(BackToMenu);
+
+        // Initial UI states
+        diseasesPanel.SetActive(false);
+        severitySlider.gameObject.SetActive(false);
+        webcamDisplay.gameObject.SetActive(false);
+        backButton.gameObject.SetActive(false);
+
+        if (titleText != null)
+            titleText.SetActive(true);
+        if (secondPageText != null)
+            secondPageText.SetActive(false);
+        if (analogHintPanel != null)
+            analogHintPanel.SetActive(false);
+
+        DisableAllEffects();
+
+        // Detect slider movement
+        severitySlider.onValueChanged.AddListener(delegate { OnSliderMoved(); });
+    }
+
+    public void ShowDiseases()
+    {
+        diseasesPanel.SetActive(true);
+        startButton.gameObject.SetActive(false);
+        backButton.gameObject.SetActive(false);
+
+        if (titleText != null)
+            titleText.SetActive(false);
+        if (secondPageText != null)
+            secondPageText.SetActive(true);
+
+        var typer = secondPageText.GetComponent<TypewriterEffect>();
+        if (typer != null)
+            typer.Play();
+    }
+
+    private void BackToMenu()
+    {
+        if (cam != null && cam.isPlaying)
+            cam.Pause();
+
+        webcamDisplay.gameObject.SetActive(false);
+        severitySlider.gameObject.SetActive(false);
+        DisableAllEffects();
+
+        diseasesPanel.SetActive(true);
+        backButton.gameObject.SetActive(false);
+
+        if (secondPageText != null)
+            secondPageText.SetActive(true);
+
+        // Hide analog hint if visible
+        if (analogHintPanel != null && analogHintPanel.activeSelf)
+        {
+            var hint = analogHintPanel.GetComponent<AnalogHint>();
+            if (hint != null)
+                hint.HideNow();
+        }
+    }
+
+    private void OnSliderMoved()
+    {
+        if (sliderUsedInCurrentSimulation) return;
+
+        sliderUsedInCurrentSimulation = true;
+        sliderUsedInSession = true;
+
+        if (analogHintPanel != null)
+        {
+            var hint = analogHintPanel.GetComponent<AnalogHint>();
+            if (hint != null)
+                hint.HideNow();
+        }
+    }
+
+    private void EnsureCameraRunning()
+    {
+        if (cam == null)
+        {
+            WebCamDevice[] devices = WebCamTexture.devices;
+            for (int i = 0; i < devices.Length; i++)
+                Debug.Log($"Camera {i}: {devices[i].name}");
+
+            string preferredDeviceName = devices.Length > 1 ? devices[1].name : devices[0].name;
+            cam = new WebCamTexture(preferredDeviceName, 1280, 720);
+        }
+
+        if (!cam.isPlaying)
+            cam.Play();
+
+        webcamDisplay.texture = cam;
+        webcamDisplay.gameObject.SetActive(true);
+
+        StartCoroutine(FitRawImageAfterDelay());
+    }
+
+    private IEnumerator FitRawImageAfterDelay()
+    {
+        yield return new WaitForSeconds(0.2f);
+        FitRawImageAbsolute(webcamDisplay, rawImageWidth, rawImageHeight);
+    }
+
+    private void FitRawImageAbsolute(RawImage image, float width, float height)
+    {
+        if (image == null) return;
+        RectTransform rt = image.rectTransform;
+        rt.sizeDelta = new Vector2(width, height);
+    }
+
+    private void HidePanelsForSimulation()
+    {
+        diseasesPanel.SetActive(false);
+        backButton.gameObject.SetActive(true);
+        if (secondPageText != null)
+            secondPageText.SetActive(false);
+    }
+
+    private void DisableAllEffects()
+    {
+        corticalEffect.enabled = false;
+        nuclearEffect.enabled = false;
+        traumaticEffect.enabled = false;
+        posteriorEffect.enabled = false;
+        stargardtEffect.enabled = false;
+        macularEffect.enabled = false;
+        rpEffect.enabled = false;
+        amdEffect.enabled = false;
+        hypertensiveEffect.enabled = false;
+        acuteCSCREffect.enabled = false;
+        choroideremiaEffect.enabled = false;
+        pathMyopiaEffect.enabled = false;
+    }
+
+    public void StartRegularVision()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        severitySlider.gameObject.SetActive(false);
+        EnsureCameraRunning();
+    }
+
+    public void StartCorticalCataract()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(corticalEffect.Initialize, corticalEffect);
+    }
+
+    public void StartNuclearCataract()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(nuclearEffect.Initialize, nuclearEffect);
+    }
+
+    public void StartTraumaticCataract()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(traumaticEffect.Initialize, traumaticEffect);
+    }
+
+    public void StartPosteriorCataract()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(posteriorEffect.Initialize, posteriorEffect);
+    }
+
+    public void StartStargardt()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(stargardtEffect.Initialize, stargardtEffect);
+    }
+
+    public void StartMacularPucker()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(macularEffect.Initialize, macularEffect);
+    }
+
+    public void StartRP()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(rpEffect.Initialize, rpEffect);
+    }
+
+    public void StartAMDEffect()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(amdEffect.Initialize, amdEffect);
+    }
+
+    public void StartHypertensiveRetinopathy()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(hypertensiveEffect.Initialize, hypertensiveEffect);
+    }
+
+    public void StartAcuteCSCR()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(acuteCSCREffect.Initialize, acuteCSCREffect);
+    }
+
+    public void StartChoroideremia()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(choroideremiaEffect.Initialize, choroideremiaEffect);
+    }
+
+    public void StartPathologicMyopia()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        EnsureCameraRunning();
+        ShowSliderAndInitEffect(pathMyopiaEffect.Initialize, pathMyopiaEffect);
+    }
+
+    private void ShowSliderAndInitEffect(System.Action<RawImage, Slider, WebCamTexture> init, Behaviour effectComponent)
+    {
+        severitySlider.value = 0f;
+        severitySlider.gameObject.SetActive(true);
+        init.Invoke(webcamDisplay, severitySlider, cam);
+        effectComponent.enabled = true;
+
+        if (effectComponent is StargardtEffect se)
+            se.ForceRefresh();
+        else if (effectComponent is RetinitisPigmentosaEffect rp)
+            rp.ForceRefresh();
+
+        sliderUsedInCurrentSimulation = false;
+
+        if (!sliderUsedInSession && analogHintPanel != null)
+        {
+            analogHintPanel.SetActive(true);
+            var hint = analogHintPanel.GetComponent<AnalogHint>();
+            if (hint != null)
+                hint.Restart();
+        }
+    }
+}
