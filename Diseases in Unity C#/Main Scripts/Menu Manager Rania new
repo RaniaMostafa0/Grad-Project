@@ -1,0 +1,461 @@
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+using System.Collections;
+
+public class MenuManager : MonoBehaviour
+{
+    [Header("Panels")]
+    [SerializeField] private GameObject diseasesPanel;
+
+    [Header("Buttons")]
+    [SerializeField] private Button startButton;
+    [SerializeField] private Button regularVisionButton;
+    [SerializeField] private Button corticalButton;
+    [SerializeField] private Button nuclearButton;
+    [SerializeField] private Button traumaticButton;
+    [SerializeField] private Button posteriorButton;
+    [SerializeField] private Button stargardtButton;
+    [SerializeField] private Button macularButton;
+    [SerializeField] private Button rpButton;
+    [SerializeField] private Button amdButton;
+    [SerializeField] private Button hypertensiveButton;
+    [SerializeField] private Button acuteCSCRButton;
+    [SerializeField] private Button choroideremiaButton;
+    [SerializeField] private Button pathologicMyopiaButton;
+    [Space]
+    [SerializeField] private Button backButton;
+
+    [Header("UI Elements")]
+    [SerializeField] private GameObject titleText;
+    [SerializeField] private GameObject secondPageText;
+
+    [Header("Slider")]
+    [SerializeField] private Slider severitySlider;
+
+    [Header("Display")]
+    [SerializeField] private RawImage webcamDisplay;
+
+    [Header("Manual Size Settings")]
+    [SerializeField] private float rawImageWidth = 1200f;
+    [SerializeField] private float rawImageHeight = 1080f;
+
+    [Header("Effects")]
+    [SerializeField] private CorticalCataractEffect corticalEffect;
+    [SerializeField] private NuclearCataractEffect nuclearEffect;
+    [SerializeField] private TraumaticCataractEffect traumaticEffect;
+    [SerializeField] private PosteriorCataractEffect posteriorEffect;
+    [SerializeField] private StargardtEffect stargardtEffect;
+    [SerializeField] private MacularPuckerEffect macularEffect;
+    [SerializeField] private RetinitisPigmentosaEffect rpEffect;
+    [SerializeField] private AMDEffect amdEffect;
+    [SerializeField] private HypertensiveRetinopathyEffect hypertensiveEffect;
+    [SerializeField] private AcuteCSCREffect acuteCSCREffect;
+    [SerializeField] private ChoroideremiaEffect choroideremiaEffect;
+    [SerializeField] private PathologicMyopiaEffect pathMyopiaEffect;
+
+    [Header("Analog Hint")]
+    [SerializeField] private GameObject analogHintPanel;
+
+    [Header("Trigger Hint")]
+    [SerializeField] private GameObject triggerHintPanel;
+
+    [Header("Disease Info Panel")]
+    [SerializeField] private GameObject diseaseInfoPanel;
+    [SerializeField] private TMP_Text diseaseTitleText;
+    [SerializeField] private TMP_Text diseaseDescriptionText;
+    [SerializeField] private TMP_Text diseaseSymptomsText;
+    [SerializeField] private Button startSimulationButton;
+
+    private WebCamTexture cam;
+    private bool sliderUsedInSession = false;
+    private bool sliderUsedInCurrentSimulation = false;
+    private bool triggerHintUsed = false;
+    private System.Action startSimulationAction;
+
+    private void Awake()
+    {
+        // Wire buttons
+        startButton.onClick.AddListener(ShowDiseases);
+        regularVisionButton.onClick.AddListener(StartRegularVision);
+        corticalButton.onClick.AddListener(StartCorticalCataract);
+        nuclearButton.onClick.AddListener(StartNuclearCataract);
+        traumaticButton.onClick.AddListener(StartTraumaticCataract);
+        posteriorButton.onClick.AddListener(StartPosteriorCataract);
+        stargardtButton.onClick.AddListener(StartStargardt);
+        macularButton.onClick.AddListener(StartMacularPucker);
+        rpButton.onClick.AddListener(StartRP);
+        amdButton.onClick.AddListener(StartAMDEffect);
+        hypertensiveButton.onClick.AddListener(StartHypertensiveRetinopathy);
+        acuteCSCRButton.onClick.AddListener(StartAcuteCSCR);
+        choroideremiaButton.onClick.AddListener(StartChoroideremia);
+        pathologicMyopiaButton.onClick.AddListener(StartPathologicMyopia);
+        backButton.onClick.AddListener(BackToMenu);
+
+        // Initial UI states
+        diseasesPanel.SetActive(false);
+        severitySlider.gameObject.SetActive(false);
+        webcamDisplay.gameObject.SetActive(false);
+        backButton.gameObject.SetActive(false);
+        if (titleText != null) titleText.SetActive(true);
+        if (secondPageText != null) secondPageText.SetActive(false);
+        if (analogHintPanel != null) analogHintPanel.SetActive(false);
+        if (triggerHintPanel != null && !triggerHintUsed)
+        {
+            triggerHintPanel.SetActive(true);
+            var hint = triggerHintPanel.GetComponent<TriggerHint>();
+            if (hint != null) hint.enabled = true;
+        }
+
+        if (diseaseInfoPanel != null)
+            diseaseInfoPanel.SetActive(false);
+
+        DisableAllEffects();
+
+        severitySlider.onValueChanged.AddListener(delegate { OnSliderMoved(); });
+    }
+
+    public void ShowDiseases()
+    {
+        diseasesPanel.SetActive(true);
+        startButton.gameObject.SetActive(false);
+        backButton.gameObject.SetActive(false);
+
+        if (titleText != null)
+            titleText.SetActive(false);
+        if (secondPageText != null)
+            secondPageText.SetActive(true);
+
+        var typer = secondPageText.GetComponent<TypewriterEffect>();
+        if (typer != null)
+            typer.Play();
+
+        if (triggerHintPanel != null && triggerHintPanel.activeSelf)
+        {
+            var hint = triggerHintPanel.GetComponent<TriggerHint>();
+            if (hint != null) hint.HideNow();
+            triggerHintPanel.SetActive(false);
+        }
+
+        triggerHintUsed = true;
+    }
+
+    private void BackToMenu()
+    {
+        if (cam != null && cam.isPlaying)
+            cam.Pause();
+
+        webcamDisplay.gameObject.SetActive(false);
+        severitySlider.gameObject.SetActive(false);
+        DisableAllEffects();
+
+        diseasesPanel.SetActive(true);
+        backButton.gameObject.SetActive(false);
+        if (secondPageText != null)
+            secondPageText.SetActive(true);
+
+        if (analogHintPanel != null && analogHintPanel.activeSelf)
+        {
+            var hint = analogHintPanel.GetComponent<AnalogHint>();
+            if (hint != null)
+                hint.HideNow();
+        }
+    }
+
+    private void OnSliderMoved()
+    {
+        if (sliderUsedInCurrentSimulation) return;
+
+        sliderUsedInCurrentSimulation = true;
+        sliderUsedInSession = true;
+
+        if (analogHintPanel != null)
+        {
+            var hint = analogHintPanel.GetComponent<AnalogHint>();
+            if (hint != null)
+                hint.HideNow();
+        }
+    }
+
+    private void EnsureCameraRunning()
+    {
+        if (cam == null)
+        {
+            WebCamDevice[] devices = WebCamTexture.devices;
+            string preferredDeviceName = devices.Length > 1 ? devices[1].name : devices[0].name;
+            cam = new WebCamTexture(preferredDeviceName, 1280, 720);
+        }
+
+        if (!cam.isPlaying)
+            cam.Play();
+
+        webcamDisplay.texture = cam;
+        webcamDisplay.gameObject.SetActive(true);
+        StartCoroutine(FitRawImageAfterDelay());
+    }
+
+    private IEnumerator FitRawImageAfterDelay()
+    {
+        yield return new WaitForSeconds(0.2f);
+        FitRawImageAbsolute(webcamDisplay, rawImageWidth, rawImageHeight);
+    }
+
+    private void FitRawImageAbsolute(RawImage image, float width, float height)
+    {
+        if (image == null) return;
+        RectTransform rt = image.rectTransform;
+        rt.sizeDelta = new Vector2(width, height);
+    }
+
+    private void HidePanelsForSimulation()
+    {
+        diseasesPanel.SetActive(false);
+        backButton.gameObject.SetActive(true);
+        if (secondPageText != null)
+            secondPageText.SetActive(false);
+    }
+
+    private void DisableAllEffects()
+    {
+        corticalEffect.enabled = false;
+        nuclearEffect.enabled = false;
+        traumaticEffect.enabled = false;
+        posteriorEffect.enabled = false;
+        stargardtEffect.enabled = false;
+        macularEffect.enabled = false;
+        rpEffect.enabled = false;
+        amdEffect.enabled = false;
+        hypertensiveEffect.enabled = false;
+        acuteCSCREffect.enabled = false;
+        choroideremiaEffect.enabled = false;
+        pathMyopiaEffect.enabled = false;
+    }
+
+    public void StartRegularVision()
+    {
+        HidePanelsForSimulation();
+        DisableAllEffects();
+        severitySlider.gameObject.SetActive(false);
+        EnsureCameraRunning();
+    }
+
+    public void StartCorticalCataract()
+    {
+        ShowDiseaseInfo(
+            "Cortical Cataract",
+            "White, spoke-like opacities that start in the lens cortex and move inward.",
+            "• Glare and light sensitivity\n• Blurry or cloudy vision\n• Difficulty seeing at night",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(corticalEffect.Initialize, corticalEffect);
+            });
+    }
+
+    public void StartNuclearCataract()
+    {
+        ShowDiseaseInfo(
+            "Nuclear Cataract",
+            "Affects the central nucleus of the lens, often leading to gradual yellowing and vision loss.",
+            "• Gradual loss of distance vision\n• Yellow or brown tint to vision\n• Difficulty distinguishing colors",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(nuclearEffect.Initialize, nuclearEffect);
+            });
+    }
+
+    public void StartTraumaticCataract()
+    {
+        ShowDiseaseInfo(
+            "Traumatic Cataract",
+            "Develops after an injury to the eye. It can appear soon after the trauma or years later.",
+            "• Blurry or cloudy vision\n• Double vision\n• Visual distortion depending on trauma site",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(traumaticEffect.Initialize, traumaticEffect);
+            });
+    }
+
+    public void StartPosteriorCataract()
+    {
+        ShowDiseaseInfo(
+            "Posterior Subcapsular Cataract",
+            "Forms at the back of the lens. Causes glare and affects reading or close-up vision.",
+            "• Glare and halos around lights\n• Difficulty reading\n• Reduced vision in bright light",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(posteriorEffect.Initialize, posteriorEffect);
+            });
+    }
+
+    public void StartStargardt()
+    {
+        ShowDiseaseInfo(
+            "Stargardt Disease",
+            "An inherited disease causing progressive central vision loss in children and young adults.",
+            "• Blurry or distorted central vision\n• Difficulty recognizing faces\n• Slow adaptation to dark",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(stargardtEffect.Initialize, stargardtEffect);
+            });
+    }
+
+    public void StartMacularPucker()
+    {
+        ShowDiseaseInfo(
+            "Macular Pucker",
+            "Scar tissue on the macula causes wrinkling and distortion of central vision.",
+            "• Distorted or wavy vision\n• Difficulty reading fine print\n• Gray or empty area in central vision",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(macularEffect.Initialize, macularEffect);
+            });
+    }
+
+    public void StartRP()
+    {
+        ShowDiseaseInfo(
+            "Retinitis Pigmentosa",
+            "A group of genetic disorders that result in retinal degeneration and tunnel vision.",
+            "• Night blindness\n• Gradual peripheral vision loss\n• Tunnel vision in advanced stages",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(rpEffect.Initialize, rpEffect);
+            });
+    }
+
+    public void StartAMDEffect()
+    {
+        ShowDiseaseInfo(
+            "Age-Related Macular Degeneration (AMD)",
+            "A disease that blurs the sharp, central vision needed for reading and driving.",
+            "• Blurred or reduced central vision\n• Dark or blurry spot in center of vision\n• Straight lines appear wavy",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(amdEffect.Initialize, amdEffect);
+            });
+    }
+
+    public void StartHypertensiveRetinopathy()
+    {
+        ShowDiseaseInfo(
+            "Hypertensive Retinopathy",
+            "Damage to the retina’s blood vessels caused by high blood pressure.",
+            "• Blurry vision\n• Reduced field of vision\n• Headaches and eye strain",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(hypertensiveEffect.Initialize, hypertensiveEffect);
+            });
+    }
+
+    public void StartAcuteCSCR()
+    {
+        ShowDiseaseInfo(
+            "Acute Central Serous Chorioretinopathy (CSCR)",
+            "Fluid builds up under the retina causing visual distortion.",
+            "• Central blurry spot or distortion\n• Straight lines appear curved\n• Objects appear smaller or farther",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(acuteCSCREffect.Initialize, acuteCSCREffect);
+            });
+    }
+
+    public void StartChoroideremia()
+    {
+        ShowDiseaseInfo(
+            "Choroideremia",
+            "An inherited disorder causing progressive vision loss due to retinal degeneration.",
+            "• Night blindness from early age\n• Peripheral vision loss\n• Central vision loss in later stages",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(choroideremiaEffect.Initialize, choroideremiaEffect);
+            });
+    }
+
+    public void StartPathologicMyopia()
+    {
+        ShowDiseaseInfo(
+            "Pathologic Myopia",
+            "A severe form of nearsightedness that can lead to retinal damage.",
+            "• Blurred distance vision\n• Visual distortions\n• Floaters or flashes of light",
+            () =>
+            {
+                HidePanelsForSimulation();
+                DisableAllEffects();
+                EnsureCameraRunning();
+                ShowSliderAndInitEffect(pathMyopiaEffect.Initialize, pathMyopiaEffect);
+            });
+    }
+
+    private void ShowSliderAndInitEffect(System.Action<RawImage, Slider, WebCamTexture> init, Behaviour effectComponent)
+    {
+        severitySlider.value = 0f;
+        severitySlider.gameObject.SetActive(true);
+        init.Invoke(webcamDisplay, severitySlider, cam);
+        effectComponent.enabled = true;
+
+        if (effectComponent is StargardtEffect se)
+            se.ForceRefresh();
+        else if (effectComponent is RetinitisPigmentosaEffect rp)
+            rp.ForceRefresh();
+
+        sliderUsedInCurrentSimulation = false;
+
+        if (!sliderUsedInSession && analogHintPanel != null)
+        {
+            analogHintPanel.SetActive(true);
+            var hint = analogHintPanel.GetComponent<AnalogHint>();
+            if (hint != null)
+                hint.Restart();
+        }
+    }
+
+   private void ShowDiseaseInfo(string title, string description, string symptoms, System.Action onStartSimulation)
+{
+    diseaseTitleText.text = title;
+    diseaseDescriptionText.text = description;
+    diseaseSymptomsText.text = $"Symptoms:\n{symptoms}";
+    diseaseInfoPanel.SetActive(true);
+
+    startSimulationAction = onStartSimulation;
+    startSimulationButton.onClick.RemoveAllListeners();
+    startSimulationButton.onClick.AddListener(() =>
+    {
+        diseaseInfoPanel.SetActive(false);
+        startSimulationAction.Invoke();
+    });
+}
+
+}
