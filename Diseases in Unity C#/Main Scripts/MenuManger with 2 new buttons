@@ -216,8 +216,7 @@ public class MenuManager : MonoBehaviour
         projectOverviewButton.gameObject.SetActive(true);
         aboutUsButton.gameObject.SetActive(true);
 
-        if (analogHintPanel != null)
-            analogHintPanel.SetActive(true);
+        
     }
 
     public void ShowDiseases()
