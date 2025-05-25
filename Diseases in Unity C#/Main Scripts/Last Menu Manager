@@ -309,12 +309,13 @@ public class MenuManager : MonoBehaviour
 
         else if (currentBackTarget == BackTarget.DiseaseList)
         {
-            // Go back to diseases panel
+            diseaseInfoPanel.SetActive(false);   // ← NEW (safely hides the popup)
+
             diseasesPanel.SetActive(true);
             backButton.gameObject.SetActive(true);
             secondPageText?.SetActive(true);
 
-            // 🔁 Reset for the next back press to go to main menu
+            // next back-press should head to the main menu
             currentBackTarget = BackTarget.MainMenu;
         }
     }
@@ -615,6 +616,8 @@ public class MenuManager : MonoBehaviour
 
     private void ShowDiseaseInfo(string title, string description, string symptoms, System.Action onStartSimulation)
     {
+        currentBackTarget = BackTarget.DiseaseList;   // ← NEW
+        backButton.transform.SetAsLastSibling();      // keeps Back above the popup
         diseaseTitleText.text = title;
         diseaseDescriptionText.text = description;
         diseaseSymptomsText.text = $"Symptoms:\n{symptoms}";
