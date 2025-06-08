@@ -1,0 +1,112 @@
+import cv2
+import numpy as np
+import pygame
+import sys
+
+def enhance_frame(frame, severity):
+    """
+    Enhance with severity in [0,2]:
+    1. Sharpen (Unsharp Mask) α: 1→2   β: 0→−1
+    2. Blue boost: 1→1.7
+    3. CLAHE clipLimit: 1→5
+    """
+    gaussian = cv2.GaussianBlur(frame, (7, 7), 2)
+    alpha = 1.0 + severity * 0.5      # 1.0→2.0
+    beta  = -severity * 0.5           # 0→−1.0
+    sharpened = cv2.addWeighted(frame, alpha, gaussian, beta, 0)
+
+    b, g, r = cv2.split(sharpened.astype(np.float32))
+    boost = 1.0 + severity * 0.35     # 1.0→1.7
+    b = np.clip(b * boost, 0, 255)
+    corrected = cv2.merge([b, g, r]).astype(np.uint8)
+
+    lab = cv2.cvtColor(corrected, cv2.COLOR_BGR2LAB)
+    l, a, bb = cv2.split(lab)
+    clip_limit = 1.0 + severity * 2.0  # 1.0→5.0
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8,8))
+    cl = clahe.apply(l)
+    enhanced_lab = cv2.merge((cl, a, bb))
+    return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+
+class Slider:
+    def __init__(self, rect, min_val=0.0, max_val=2.0, initial=0.0):
+        self.rect = pygame.Rect(rect)
+        self.knob = pygame.Rect(0,0, 12, self.rect.height+4)
+        self.min, self.max = min_val, max_val
+        self.value = initial
+        self.drag = False
+        self._update_knob()
+
+    def _update_knob(self):
+        frac = (self.value - self.min) / (self.max - self.min)
+        x = self.rect.x + int(frac * self.rect.width)
+        self.knob.center = (x, self.rect.centery)
+
+    def handle_event(self, e):
+        if e.type == pygame.MOUSEBUTTONDOWN and self.knob.collidepoint(e.pos):
+            self.drag = True
+        elif e.type == pygame.MOUSEBUTTONUP:
+            self.drag = False
+        elif e.type == pygame.MOUSEMOTION and self.drag:
+            x = max(self.rect.x, min(self.rect.x+self.rect.width, e.pos[0]))
+            self.knob.centerx = x
+            frac = (x - self.rect.x) / self.rect.width
+            self.value = self.min + frac*(self.max-self.min)
+
+    def draw(self, surf):
+        pygame.draw.rect(surf, (200,200,200), self.rect)
+        pygame.draw.rect(surf, (100,100,100), self.knob)
+
+def main(input_path):
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        print("Cannot open:", input_path); sys.exit(1)
+    ret, frame = cap.read()
+    if not ret:
+        print("Empty video."); sys.exit(1)
+
+    # --- full screen setup ---
+    pygame.init()
+    info = pygame.display.Info()
+    screen_w, screen_h = info.current_w, info.current_h
+    screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN)
+    pygame.mouse.set_visible(True)
+
+    # slider occupies bottom 30 px
+    slider_height = 30
+    video_h = screen_h - slider_height
+    slider = Slider(rect=(20, video_h+5, screen_w-40, 20), max_val=2.0)
+
+    clock = pygame.time.Clock()
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    running = True
+    while running:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT or (ev.type==pygame.KEYDOWN and ev.key==pygame.K_ESCAPE):
+                running = False
+            slider.handle_event(ev)
+
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # resize to fullscreen video area
+        resized = cv2.resize(frame, (screen_w, video_h))
+        enhanced = enhance_frame(resized, slider.value)
+        rgb = cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
+
+        # blit and draw
+        surf = pygame.image.frombuffer(rgb.tobytes(), (screen_w, video_h), 'RGB')
+        screen.blit(surf, (0,0))
+        slider.draw(screen)
+
+        pygame.display.flip()
+        clock.tick(30)
+
+    cap.release()
+    pygame.quit()
+
+if __name__=="__main__":
+    INPUT = r"C:\Users\pc\Downloads\WhatsApp Video 2024-11-30 at 23.04.32_ebe3b33d.mp4"
+    main(INPUT)
