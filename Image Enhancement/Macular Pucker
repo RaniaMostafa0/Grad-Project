@@ -1,0 +1,146 @@
+"""
+Macular-Pucker simulator  (fullscreen, fast)
+
+• Enhancement: warping + sharpening + CLAHE.
+• Scroll-bar (20 px) at the bottom controls signed severity ∈ [-1 … +1].
+• Heavy image processing runs at the video’s original resolution,
+  then the enhanced frame is stretched to the screen size → keeps FPS high.
+
+Requires:
+    pip install opencv-python pygame numpy
+"""
+
+import cv2
+import numpy as np
+import pygame
+import sys
+from pygame.locals import *
+
+# ────────────────── UI constants ──────────────────
+SCROLLBAR_HEIGHT = 20
+SCROLLBAR_COLOR  = (100, 100, 100)   # dark grey bar
+THUMB_COLOR      = (200, 200, 200)   # light grey thumb
+THUMB_WIDTH      = 40
+
+# ────────────────── image-processing core ──────────────────
+def invert_distortion_map(
+        shape, strength,
+        base_amp=15,  max_extra_amp=30,
+        base_freq=4,  max_extra_freq=4,
+        x_off=70, y_off=40):
+    """
+    Build maps for cv2.remap that apply a sinusoidal ‘pucker’
+    whose amplitude & frequency grow with |strength| (0→1).
+    """
+    h, w  = shape[:2]
+    cx, cy = w // 2 + x_off, h // 2 + y_off
+
+    abs_s   = abs(strength)          # 0 … 1
+    sign_s  = np.sign(strength)      # −1, 0, +1
+    amp     = (base_amp + max_extra_amp * abs_s) * sign_s
+    freq    =  base_freq + max_extra_freq * abs_s
+
+    x, y = np.meshgrid(np.arange(w), np.arange(h))
+    dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+    fade = np.clip((min(cx, cy) - dist) / min(cx, cy), 0, 1)  # radial fall-off
+
+    amp_x = np.sin(2 * np.pi * (y - cy) / h * freq) * amp
+    amp_y = np.cos(2 * np.pi * (x - cx) / w * freq) * amp
+
+    map_x = (x - amp_x * fade).astype(np.float32)
+    map_y = (y - amp_y * fade).astype(np.float32)
+    return map_x, map_y
+
+
+def enhance_frame(frame_bgr, strength):
+    """Apply macular-pucker distortion + sharpening + CLAHE."""
+    mx, my = invert_distortion_map(frame_bgr.shape, strength)
+    warped = cv2.remap(frame_bgr, mx, my, cv2.INTER_LINEAR,
+                       borderMode=cv2.BORDER_REFLECT)
+
+    blur  = cv2.GaussianBlur(warped, (7, 7), 2)
+    sharp = cv2.addWeighted(warped, 1.5, blur, -0.5, 0)
+
+    lab   = cv2.cvtColor(sharp, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(3.5, (8, 8))
+    lab[..., 0] = clahe.apply(l)
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+# ────────────────── main loop ──────────────────
+def main(src=0):
+    cap = cv2.VideoCapture(src)
+    if not cap.isOpened():
+        sys.exit("Cannot open video source")
+
+    # Probe first frame to get native resolution
+    ret, first = cap.read()
+    if not ret:
+        sys.exit("Empty video or webcam stream")
+    orig_h, orig_w = first.shape[:2]
+
+    # Pygame full-screen setup
+    pygame.init()
+    info = pygame.display.Info()
+    screen_w, screen_h = info.current_w, info.current_h
+    screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN)
+    pygame.display.set_caption("Macular-Pucker Simulator  •  Esc to quit")
+
+    # Geometry: video fills full screen width, slider sits at bottom
+    video_h   = screen_h - SCROLLBAR_HEIGHT
+    max_thumb = screen_w - THUMB_WIDTH
+    thumb_x   = max_thumb // 2            # centred ⇒ strength 0
+    dragging  = False
+
+    fps   = cap.get(cv2.CAP_PROP_FPS) or 30
+    clock = pygame.time.Clock()
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    while True:
+        # ─── event handling ───
+        for ev in pygame.event.get():
+            if ev.type == QUIT or (ev.type == KEYDOWN and ev.key == K_ESCAPE):
+                cap.release()
+                pygame.quit()
+                return
+            elif ev.type == MOUSEBUTTONDOWN and ev.pos[1] >= video_h:
+                dragging = True
+            elif ev.type == MOUSEBUTTONUP:
+                dragging = False
+            elif ev.type == MOUSEMOTION and dragging:
+                thumb_x = np.clip(ev.pos[0] - THUMB_WIDTH // 2, 0, max_thumb)
+
+        # ─── read & enhance at native size ───
+        ret, frame_bgr = cap.read()
+        if not ret:               # loop video files, keep webcams live
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            continue
+
+        strength = ((thumb_x / max_thumb) - 0.5) * 2    # map to −1…+1
+        enhanced = enhance_frame(frame_bgr, strength)    # still orig size
+
+        # ─── scale for display only ───
+        disp_bgr = cv2.resize(enhanced, (screen_w, video_h),
+                              interpolation=cv2.INTER_LINEAR)
+        disp_rgb = cv2.cvtColor(disp_bgr, cv2.COLOR_BGR2RGB)
+        surf_vid = pygame.image.frombuffer(disp_rgb.tobytes(),
+                                           (screen_w, video_h), 'RGB')
+
+        # ─── render ───
+        screen.blit(surf_vid, (0, 0))
+        pygame.draw.rect(screen, SCROLLBAR_COLOR,
+                         (0, video_h, screen_w, SCROLLBAR_HEIGHT))
+        pygame.draw.rect(screen, THUMB_COLOR,
+                         (thumb_x, video_h, THUMB_WIDTH, SCROLLBAR_HEIGHT))
+
+        pygame.display.flip()
+        clock.tick(fps)           # keep original frame-rate
+
+    # unreachable but tidy
+    cap.release()
+    pygame.quit()
+
+# ────────────────── entry point ──────────────────
+if __name__ == "__main__":
+    # 0 = default webcam, or provide a video file path
+    main(r"C:\Users\pc\Downloads\WhatsApp Video 2024-11-30 at 23.04.32_ebe3b33d.mp4")
