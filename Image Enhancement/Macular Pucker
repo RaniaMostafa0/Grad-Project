@@ -1,10 +1,10 @@
 """
-Macular-Pucker simulator (video version, bi-directional slider, no blur)
-────────────────────────────────────────────────────────────────────────
+Macular-Pucker simulator (image version, bi-directional slider, no blur)
+───────────────────────────────────────────────────────────────────────
 • Slider “Severity” runs 0 … 200 and starts at 100  (normal vision).
       – move right  → positive puckering
       – move left   → inverted puckering
-• ESC quits, video auto-loops.
+• ESC quits.
 
 Requires:  pip install opencv-python numpy
 """
@@ -13,7 +13,8 @@ import cv2
 import numpy as np
 
 # ───────────── user settings ──────────────────────────────────────────
-VIDEO_PATH      = r"C:\Users\pc\Downloads\WhatsApp Video 2024-11-30 at 23.04.32_ebe3b33d.mp4"
+IMAGE_PATH      = r"C:\Users\pc\Pictures\akatski.jpg"
+# (replace with your image file)
 BASE_WAVE_FREQ  = 6     # base sine-wave count at zero severity
 DELTA_WAVE_FREQ = 6     # extra waves at full severity → up to 12
 RADIUS_FRAC     = 0.60  # affected zone (fraction of half-width)
@@ -21,15 +22,12 @@ MAX_SHIFT_PX    = 13.0  # maximum pixel displacement
 # ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    cap = cv2.VideoCapture(VIDEO_PATH)
-    if not cap.isOpened():
-        raise RuntimeError(f"❌  Cannot open video: {VIDEO_PATH}")
+    # load a single image
+    img = cv2.imread(IMAGE_PATH)
+    if img is None:
+        raise RuntimeError(f"❌  Cannot load image: {IMAGE_PATH}")
 
-    ok, frame = cap.read()
-    if not ok:
-        raise RuntimeError("❌  Cannot read a frame from the video.")
-
-    h, w = frame.shape[:2]
+    h, w = img.shape[:2]
 
     # ── precompute static geometry (float32) ─────────────────────────
     grid_x, grid_y = np.meshgrid(
@@ -58,18 +56,13 @@ def main() -> None:
     cv2.createTrackbar('Severity', 'Macular-Pucker', CENTER, 200, lambda *_: None)
 
     while True:
-        ok, frame = cap.read()
-        if not ok:  # loop when video ends
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            continue
-
         raw   = cv2.getTrackbarPos('Severity', 'Macular-Pucker')
         delta = raw - CENTER                 # −100 … +100
         mag   = abs(delta) / CENTER          # 0 … 1 strength
         sgn   = 1 if delta >= 0 else -1      # direction sign
 
         if mag < 1e-3:                       # fast path: no distortion
-            cv2.imshow('Macular-Pucker', frame)
+            cv2.imshow('Macular-Pucker', img)
             if cv2.waitKey(1) == 27:
                 break
             continue
@@ -85,16 +78,15 @@ def main() -> None:
         map_x = grid_x + dir_x * (sgn * mag * MAX_SHIFT_PX)
         map_y = grid_y + dir_y * (sgn * mag * MAX_SHIFT_PX)
 
-        warped = cv2.remap(frame, map_x, map_y,
+        warped = cv2.remap(img, map_x, map_y,
                            interpolation=cv2.INTER_LINEAR,
                            borderMode=cv2.BORDER_REFLECT101)
 
-        # **no blur or blending** — show only the warped result
+        # no blur—just show the warped image
         cv2.imshow('Macular-Pucker', warped)
         if cv2.waitKey(1) == 27:
             break
 
-    cap.release()
     cv2.destroyAllWindows()
 
 
