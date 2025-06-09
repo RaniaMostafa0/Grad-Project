@@ -1,80 +1,41 @@
 import cv2
 import numpy as np
 
-def white_balance_gray_world(img):
-    """Gray-world white balance: scale B, G, R so each channel’s mean = overall mean."""
-    b, g, r = cv2.split(img.astype(np.float32))
-    avg_b, avg_g, avg_r = b.mean(), g.mean(), r.mean()
-    avg = (avg_b + avg_g + avg_r) / 3.0
-    scale_b, scale_g, scale_r = avg/avg_b, avg/avg_g, avg/avg_r
-    b = np.clip(b * scale_b, 0, 255)
-    g = np.clip(g * scale_g, 0, 255)
-    r = np.clip(r * scale_r, 0, 255)
-    return cv2.merge([b, g, r]).astype(np.uint8)
-
-def apply_clahe(img, clip_limit=4.0, tile_grid_size=(8,8)):
-    """Convert to Lab, apply CLAHE on L-channel (stronger clip_limit), then back to BGR."""
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
-    cl = clahe.apply(l)
-    lab = cv2.merge([cl, a, b])
-    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-
-def unsharp_mask(img, kernel_size=(9,9), amount=1.5):
-    """Sharpen the image by adding a scaled high-pass detail layer."""
-    blurred = cv2.GaussianBlur(img, kernel_size, sigmaX=0)
-    return cv2.addWeighted(img, 1 + amount, blurred, -amount, 0)
-
-def simulate_cortical_cataract_enhancement(frame):
+def apply_gamma_correction(img, gamma):
     """
-    Enhanced version:
-      1) Stronger white-balance  
-      2) Stronger CLAHE  
-      3) Unsharp mask for extra detail  
+    Applies gamma correction to the input image using a lookup table.
     """
-    wb = white_balance_gray_world(frame)
-    clahe_img = apply_clahe(wb)
-    sharp = unsharp_mask(clahe_img)
-    return sharp
+    look_up = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)]).astype("uint8")
+    return cv2.LUT(img, look_up)
 
-def nothing(x):
-    pass
+# Load image
+image_path = r"Videos\a5e93896-bd0a-446d-8e47-29ee8b84395c.png"
+original = cv2.imread(image_path)
+if original is None:
+    raise ValueError(f"❌ Cannot load image: {image_path}")
 
-def main():
-    cap = cv2.VideoCapture(0)  # default webcam
-    if not cap.isOpened():
-        print("Error: cannot open webcam.")
-        return
+# Create window and trackbar
+cv2.namedWindow("Gamma Correction", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("Gamma Correction", 800, 600)
 
-    window = 'Cortical Cataract Enhancement'
-    # create a resizable window and then make it fullscreen
-    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty(window, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+# Trackbar: 0–200 → gamma ≈ 0.01 to 10 (log scale)
+cv2.createTrackbar("Gamma", "Gamma Correction", 100, 200, lambda x: None)
 
-    # slider: 0 (no enhancement) → 100 (full enhancement)
-    cv2.createTrackbar('Enhancement', window, 100, 100, nothing)  # default at max
+while True:
+    slider_val = cv2.getTrackbarPos("Gamma", "Gamma Correction")
+    gamma = 10 ** ((slider_val - 100) / 100.0)  # Exponential mapping
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    corrected = apply_gamma_correction(original, gamma)
 
-        # read slider and normalize to [0.0, 1.0]
-        sev = cv2.getTrackbarPos('Enhancement', window)
-        alpha = sev / 100.0
+    # Display gamma value on window title
+    cv2.imshow("Gamma Correction", corrected)
+    cv2.setWindowTitle("Gamma Correction", f"Gamma Correction (γ = {gamma:.2f})")
 
-        # compute fully enhanced frame
-        enhanced = simulate_cortical_cataract_enhancement(frame)
-        # blend original ↔ enhanced
-        output = cv2.addWeighted(frame, 1 - alpha, enhanced, alpha, 0)
+    key = cv2.waitKey(1)
+    if key == 27:  # ESC to exit
+        break
+    elif key == ord('s'):
+        cv2.imwrite("gamma_corrected.jpg", corrected)
+        print("✅ Saved as 'gamma_corrected.jpg'")
 
-        cv2.imshow(window, output)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    main()
+cv2.destroyAllWindows()
