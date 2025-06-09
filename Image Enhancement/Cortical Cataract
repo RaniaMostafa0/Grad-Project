@@ -1,0 +1,80 @@
+import cv2
+import numpy as np
+
+def white_balance_gray_world(img):
+    """Gray-world white balance: scale B, G, R so each channel’s mean = overall mean."""
+    b, g, r = cv2.split(img.astype(np.float32))
+    avg_b, avg_g, avg_r = b.mean(), g.mean(), r.mean()
+    avg = (avg_b + avg_g + avg_r) / 3.0
+    scale_b, scale_g, scale_r = avg/avg_b, avg/avg_g, avg/avg_r
+    b = np.clip(b * scale_b, 0, 255)
+    g = np.clip(g * scale_g, 0, 255)
+    r = np.clip(r * scale_r, 0, 255)
+    return cv2.merge([b, g, r]).astype(np.uint8)
+
+def apply_clahe(img, clip_limit=4.0, tile_grid_size=(8,8)):
+    """Convert to Lab, apply CLAHE on L-channel (stronger clip_limit), then back to BGR."""
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    cl = clahe.apply(l)
+    lab = cv2.merge([cl, a, b])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+def unsharp_mask(img, kernel_size=(9,9), amount=1.5):
+    """Sharpen the image by adding a scaled high-pass detail layer."""
+    blurred = cv2.GaussianBlur(img, kernel_size, sigmaX=0)
+    return cv2.addWeighted(img, 1 + amount, blurred, -amount, 0)
+
+def simulate_cortical_cataract_enhancement(frame):
+    """
+    Enhanced version:
+      1) Stronger white-balance  
+      2) Stronger CLAHE  
+      3) Unsharp mask for extra detail  
+    """
+    wb = white_balance_gray_world(frame)
+    clahe_img = apply_clahe(wb)
+    sharp = unsharp_mask(clahe_img)
+    return sharp
+
+def nothing(x):
+    pass
+
+def main():
+    cap = cv2.VideoCapture(0)  # default webcam
+    if not cap.isOpened():
+        print("Error: cannot open webcam.")
+        return
+
+    window = 'Cortical Cataract Enhancement'
+    # create a resizable window and then make it fullscreen
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(window, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+    # slider: 0 (no enhancement) → 100 (full enhancement)
+    cv2.createTrackbar('Enhancement', window, 100, 100, nothing)  # default at max
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # read slider and normalize to [0.0, 1.0]
+        sev = cv2.getTrackbarPos('Enhancement', window)
+        alpha = sev / 100.0
+
+        # compute fully enhanced frame
+        enhanced = simulate_cortical_cataract_enhancement(frame)
+        # blend original ↔ enhanced
+        output = cv2.addWeighted(frame, 1 - alpha, enhanced, alpha, 0)
+
+        cv2.imshow(window, output)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
