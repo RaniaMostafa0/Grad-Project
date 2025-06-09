@@ -1,23 +1,25 @@
 """
-Macular-Pucker simulator (video version)
-────────────────────────────────────────
-• Track-bar  “Severity”  controls progression 0 … 1.
+Macular-Pucker simulator (video version, bi-directional slider)
+───────────────────────────────────────────────────────────────
+• Slider “Severity” runs 0 … 200 and starts at 100  (normal vision).
+      – move right  → stronger positive puckering
+      – move left   → equally strong but inverted puckering
 • ESC quits, video auto-loops.
 
-pip install opencv-python numpy
+Requires:  pip install opencv-python numpy
 """
 
 import cv2
 import numpy as np
 
-# ───────────── user settings ──────────────────────────────────────────
-VIDEO_PATH      = r"C:\Users\pc\Downloads\WhatsApp Video 2024-11-30 at 23.04.32_ebe3b33d.mp4"      # ← put your file here
-BASE_WAVE_FREQ  = 6        # f(0)  – gentle ripples
-DELTA_WAVE_FREQ = 6        # added at slider = 1   →  total 12
-RADIUS_FRAC     = 0.60     # affected zone (fraction of half-width)
-MAX_SHIFT_PX    = 13.0     # peak pixel displacement
-MAX_BLUR_KERNEL = 51       # odd
-# ──────────────────────────────────────────────────────────────────────
+# ───────────── user settings ───────────────────────────────────
+VIDEO_PATH      = r"C:\Users\pc\Downloads\WhatsApp Video 2024-11-30 at 23.04.32_ebe3b33d.mp4"    #  ← put your file here
+BASE_WAVE_FREQ  = 6                  # f(mag=0)
+DELTA_WAVE_FREQ = 6                  # extra waves at |mag|=1   → max 12
+RADIUS_FRAC     = 0.60               # affected zone (fraction of half-width)
+MAX_SHIFT_PX    = 13.0               # peak pixel displacement
+MAX_BLUR_KERNEL = 51                 # odd
+# ───────────────────────────────────────────────────────────────
 
 
 def main() -> None:
@@ -25,78 +27,82 @@ def main() -> None:
     if not cap.isOpened():
         raise RuntimeError(f"❌  Cannot open video: {VIDEO_PATH}")
 
-    # grab first frame to discover geometry
     ok, frame = cap.read()
     if not ok:
         raise RuntimeError("❌  Cannot read a frame from the video.")
 
     h, w = frame.shape[:2]
 
-    # ── pre-compute static arrays (all float32) ───────────────────────
+    # ── static geometry (float32) ──────────────────────────────
     grid_x, grid_y = np.meshgrid(
         np.arange(w, dtype=np.float32),
         np.arange(h, dtype=np.float32)
     )
-
     cx, cy = w * 0.5, h * 0.5
-    R = min(cx, cy) * RADIUS_FRAC
+    R      = min(cx, cy) * RADIUS_FRAC
 
     dx, dy = grid_x - cx, grid_y - cy
-    r = np.sqrt(dx * dx + dy * dy)
-    r_safe = np.where(r == 0, 1, r)        # avoid division by zero
+    r      = np.sqrt(dx * dx + dy * dy)
+    r_safe = np.where(r == 0, 1, r)           # avoid /0
 
-    u = r / R                               # 0-1 radial coordinate
+    u = r / R                                 # normalised radius
     smooth = np.where(r <= R,
-                      (1.0 - u ** 2) ** 2,  # bell-shape fall-off
+                      (1.0 - u ** 2) ** 2,    # bell-shaped mask
                       0.0).astype(np.float32)
 
-    # normalised direction vectors (constant)
-    ex = np.where(r == 0, 0, dx / r_safe).astype(np.float32)
+    ex = np.where(r == 0, 0, dx / r_safe).astype(np.float32)  # unit vectors
     ey = np.where(r == 0, 0, dy / r_safe).astype(np.float32)
 
-    # ── simple OpenCV window + slider ────────────────────────────────
+    # ── OpenCV window & centred track-bar ─────────────────────
     cv2.namedWindow('Macular-Pucker', cv2.WINDOW_NORMAL)
-    cv2.createTrackbar('Severity', 'Macular-Pucker', 0, 100, lambda *_: None)
+    CENTER = 100                               # neutral position
+    cv2.createTrackbar('Severity', 'Macular-Pucker',
+                       CENTER, 200, lambda *_: None)
 
     while True:
         ok, frame = cap.read()
-        if not ok:                          # reached the end → loop
+        if not ok:                             # loop when video ends
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             continue
 
-        t = cv2.getTrackbarPos('Severity', 'Macular-Pucker') / 100.0
-        if t < 1e-3:                        # fast path – no effect
+        raw   = cv2.getTrackbarPos('Severity', 'Macular-Pucker')
+        delta = raw - CENTER                   # −100 … +100
+        mag   = abs(delta) / CENTER            # 0 … 1   (strength)
+        sgn   = 1 if delta >= 0 else -1        # left ↔ right
+
+        if mag < 1e-3:                         # fast path: normal vision
             cv2.imshow('Macular-Pucker', frame)
             if cv2.waitKey(1) == 27: break
             continue
 
-        # ── dynamic sine-wave field (freq grows with t) ────────────
-        freq = BASE_WAVE_FREQ + DELTA_WAVE_FREQ * t
+        # ── dynamic wavefield (freq scales with |mag|) ────────
+        freq = BASE_WAVE_FREQ + DELTA_WAVE_FREQ * mag
         wave = smooth * np.sin(u * freq * np.pi).astype(np.float32)
 
         dir_x = wave * ex
         dir_y = wave * ey
 
-        map_x = grid_x + dir_x * (t * MAX_SHIFT_PX)
-        map_y = grid_y + dir_y * (t * MAX_SHIFT_PX)
+        # sign flips direction when slider is left of centre
+        map_x = grid_x + dir_x * (sgn * mag * MAX_SHIFT_PX)
+        map_y = grid_y + dir_y * (sgn * mag * MAX_SHIFT_PX)
 
         warped = cv2.remap(frame, map_x, map_y,
                            interpolation=cv2.INTER_LINEAR,
                            borderMode=cv2.BORDER_REFLECT101)
 
-        # progressive Gaussian blur inside the affected area
-        k = 1 + int(t * MAX_BLUR_KERNEL)
+        # Gaussian blur radius proportional to |mag|
+        k = 1 + int(mag * MAX_BLUR_KERNEL)
         if k % 2 == 0: k += 1
         blurred = cv2.GaussianBlur(warped, (k, k), 0)
 
-        # per-pixel blend: original vs blurred
-        mask1 = smooth[..., None]           # to 3-channel
+        # mask to 3-channel for blending
+        mask1 = smooth[..., None]
         blended_f = warped.astype(np.float32) * (1.0 - mask1) \
                   + blurred.astype(np.float32) * mask1
         blended = np.clip(blended_f, 0, 255).astype(np.uint8)
 
         cv2.imshow('Macular-Pucker', blended)
-        if cv2.waitKey(1) == 27:            # ESC = quit
+        if cv2.waitKey(1) == 27:               # ESC = quit
             break
 
     cap.release()
