@@ -363,7 +363,7 @@ public class MenuManager : MonoBehaviour
         }
     }
 
-    private void EnsureCameraRunning()
+        private void EnsureCameraRunning()
 {
     if (cam == null)
     {
@@ -393,7 +393,6 @@ public class MenuManager : MonoBehaviour
     webcamDisplay.gameObject.SetActive(true);
     StartCoroutine(FitRawImageAfterDelay());
 }
-
 
     private IEnumerator FitRawImageAfterDelay()
     {
@@ -445,7 +444,7 @@ public class MenuManager : MonoBehaviour
         ShowDiseaseInfo(
             "Cortical Cataract",
             "White, spoke-like opacities that start in the lens cortex and move inward.",
-            "• Glare and light sensitivity\n• Blurry or cloudy vision\n• Difficulty seeing at night",
+            "• Cloudy vision\n• Difficulty seeing at night",
             () =>
             {
                 HidePanelsForSimulation();
@@ -460,8 +459,8 @@ public class MenuManager : MonoBehaviour
     {
         ShowDiseaseInfo(
             "Nuclear Cataract",
-            "Affects the central nucleus of the lens, often leading to gradual yellowing and vision loss.",
-            "• Gradual loss of distance vision\n• Yellow or brown tint to vision\n• Difficulty distinguishing colors",
+            "Central yellowing or clouding of the lens nucleus.",
+            "• Yellowish discoloration of vision\n• Difficulty distinguishing colors",
             () =>
             {
                 HidePanelsForSimulation();
@@ -477,7 +476,7 @@ public class MenuManager : MonoBehaviour
         ShowDiseaseInfo(
             "Traumatic Cataract",
             "Develops after an injury to the eye. It can appear soon after the trauma or years later.",
-            "• Blurry or cloudy vision\n• Double vision\n• Visual distortion depending on trauma site",
+            "• Blurry vision",
             () =>
             {
                 HidePanelsForSimulation();
@@ -493,7 +492,7 @@ public class MenuManager : MonoBehaviour
         ShowDiseaseInfo(
             "Posterior Subcapsular Cataract",
             "Forms at the back of the lens. Causes glare and affects reading or close-up vision.",
-            "• Glare and halos around lights\n• Difficulty reading\n• Reduced vision in bright light",
+            "• Glare and halos around lights",
             () =>
             {
                 HidePanelsForSimulation();
@@ -508,8 +507,8 @@ public class MenuManager : MonoBehaviour
     {
         ShowDiseaseInfo(
             "Stargardt",
-            "An inherited disease causing progressive central vision loss in children and young adults.",
-            "• Blurry or distorted central vision\n• Difficulty recognizing faces\n• Slow adaptation to dark",
+            "Macular degeneration caused by a genetic mutation affecting central vision.",
+            "• Central vision loss\n• Slow adaptation to dark",
             () =>
             {
                 HidePanelsForSimulation();
@@ -524,8 +523,8 @@ public class MenuManager : MonoBehaviour
     {
         ShowDiseaseInfo(
             "Macular Pucker",
-            "Scar tissue on the macula causes wrinkling and distortion of central vision.",
-            "• Distorted or wavy vision\n• Difficulty reading fine print\n• Gray or empty area in central vision",
+            "Wrinkled or scarred tissue forming on the retinal surface.",
+            "• Central distortion\n• Central blurring",
             () =>
             {
                 HidePanelsForSimulation();
@@ -540,8 +539,8 @@ public class MenuManager : MonoBehaviour
     {
         ShowDiseaseInfo(
             "Retinitis Pigmentosa",
-            "A group of genetic disorders that result in retinal degeneration and tunnel vision.",
-            "• Night blindness\n• Gradual peripheral vision loss\n• Tunnel vision in advanced stages",
+            "Progressive degeneration of photoreceptors in the retina.",
+            "• Night blindness\n• Gradual peripheral vision loss\n• Tunnel vision",
             () =>
             {
                 HidePanelsForSimulation();
@@ -556,8 +555,8 @@ public class MenuManager : MonoBehaviour
     {
         ShowDiseaseInfo(
             "Age-Related Macular Degeneration (AMD)",
-            "A disease that blurs the sharp, central vision needed for reading and driving.",
-            "• Blurred or reduced central vision\n• Dark or blurry spot in center of vision\n• Straight lines appear wavy",
+            "Deterioration of the macula affecting central vision.",
+            "• Blurred central vision (often occurs in the early stages)\n• Central vision loss\n• Distortion",
             () =>
             {
                 HidePanelsForSimulation();
@@ -572,8 +571,8 @@ public class MenuManager : MonoBehaviour
     {
         ShowDiseaseInfo(
             "Hypertensive Retinopathy",
-            "Damage to the retina’s blood vessels caused by high blood pressure.",
-            "• Blurry vision\n• Reduced field of vision\n• Headaches and eye strain",
+            "Retinal damage from prolonged high blood pressure.",
+            "• Reduced contrast sensitivity\n• Scattered black spots across the entire visual field\n• Blurring",
             () =>
             {
                 HidePanelsForSimulation();
@@ -588,8 +587,8 @@ public class MenuManager : MonoBehaviour
     {
         ShowDiseaseInfo(
             "Acute Central Serous Chorioretinopathy (CSCR)",
-            "Fluid builds up under the retina causing visual distortion.",
-            "• Central blurry spot or distortion\n• Straight lines appear curved\n• Objects appear smaller or farther",
+            "Fluid buildup under the retina causing a localized retinal detachment.",
+            "• Central blurry spot\n• Distortion\n• Micropsia",
             () =>
             {
                 HidePanelsForSimulation();
@@ -604,8 +603,8 @@ public class MenuManager : MonoBehaviour
     {
         ShowDiseaseInfo(
             "Choroideremia",
-            "An inherited disorder causing progressive vision loss due to retinal degeneration.",
-            "• Night blindness from early age\n• Peripheral vision loss\n• Central vision loss in later stages",
+            "Gradual loss of the choroid and retina due to a genetic defect.",
+            "• Night blindness\n• Peripheral vision loss\n• Dark scotomas in the central vision",
             () =>
             {
                 HidePanelsForSimulation();
@@ -620,8 +619,8 @@ public class MenuManager : MonoBehaviour
     {
         ShowDiseaseInfo(
             "Pathologic Myopia",
-            "A severe form of nearsightedness that can lead to retinal damage.",
-            "• Blurred distance vision\n• Visual distortions\n• Floaters or flashes of light",
+            "Excessive eye elongation leading to retinal thinning and damage.",
+            "• Blurry vision\n• Black scotomas\n• Central vision loss\n• Distortion ",
             () =>
             {
                 HidePanelsForSimulation();
